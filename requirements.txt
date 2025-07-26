@@ -1,0 +1,12 @@
+numpy
+pandas
+matplotlib
+tensorflow
+scikit-learn
+seaborn
+python-dotenv
+Flask 
+line-bot-sdk 
+pillow
+requests
+openpyxl
