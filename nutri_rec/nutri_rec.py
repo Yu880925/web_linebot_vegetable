@@ -98,8 +98,10 @@ def get_top_vegetables_by_nutrient(nutrient_name: str,
         return "錯誤：蔬菜別名檔案中找不到 'vege_id' 或 'alias' 欄位。請檢查檔案內容。"
 
     # 建立 vege_id 到別名列表的映射字典
-    # 將 alias_df 中的同一 vege_id 的 alias 合併成列表
-    vege_id_to_aliases = alias_df.groupby(vege_id_col_alias)[alias_col_alias].apply(list).to_dict()
+    # 將 alias_df 中的同一 vege_id 的 alias 合併成列表，但過濾掉 type 為 '羅馬拼音' 和 '錯字' 的別名
+    # 先過濾掉不需要的 type
+    filtered_alias_df = alias_df[~alias_df['type'].isin(['羅馬拼音', '錯字'])]
+    vege_id_to_aliases = filtered_alias_df.groupby(vege_id_col_alias)[alias_col_alias].apply(list).to_dict()
 
     df = nutrition_df.copy() # 複製一份用於處理的DataFrame
 
@@ -205,7 +207,12 @@ def get_vegetables_by_name_or_alias(search_term: str,
         if not nutrition_data.empty:
             row = nutrition_data.iloc[0] # 取第一行數據
             chinese_name = basic_vege_df[basic_vege_df['vege_id'] == vege_id]['vege_name'].iloc[0]
-            aliases = alias_df[alias_df['vege_id'] == vege_id]['alias'].tolist()
+            # 過濾掉 type 為 '羅馬拼音' 和 '錯字' 的別名
+            filtered_aliases = alias_df[
+                (alias_df['vege_id'] == vege_id) & 
+                (~alias_df['type'].isin(['羅馬拼音', '錯字']))
+            ]['alias'].tolist()
+            aliases = filtered_aliases
 
             all_nutrients = {}
             for col in nutrition_df.columns:
