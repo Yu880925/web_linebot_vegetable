@@ -1,5 +1,20 @@
-.env
+# Python 虛擬環境
 venv/
 venv_py310/
+
+# Python 編譯產生的檔案
 __pycache__/
-venv_310/
+*.pyc
+
+# 環境變數檔案 (包含敏感資訊)
+.env
+
+# MinIO 數據卷 (由 Docker 管理，不應提交到 Git)
+minio_data/
+
+# 應用程式產生的暫存圖片檔案
+temp_image_*.jpg
+
+# IDE 或編輯器相關的檔案 (可選，但建議包含)
+.vscode/
+.idea/
