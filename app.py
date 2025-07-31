@@ -261,6 +261,7 @@ def handle_image_message(event):
             prefix_message_text = f"可能是\"{veg_name}\"   也許讓我再看更清楚的一張"
         else:
             prefix_message_text = "歐內該  請提供更清晰的"
+            
 
         # 在訊息最後加上信心度 (如果信心度大於等於50%)
         if confidence >= 0.5:
