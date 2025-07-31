@@ -117,15 +117,23 @@ def _create_vegetable_flex_message(veg_data_list, alt_text_prefix, is_nutrient_s
         if is_nutrient_search and 'nutrient_name' in veg_data and 'nutrient_value' in veg_data and 'unit' in veg_data:
             bubble_body_contents.insert(1, FlexText(text=f"查詢成分：{veg_data['nutrient_name']} {veg_data['nutrient_value']}{veg_data['unit']}", size='md', margin='md'))
 
+        import urllib.parse
+
+        veg_name = veg_data['chinese_name']  # 例：九層塔
+        image_filename = urllib.parse.quote(f"{veg_name}.jpg")
+        image_url = f"https://a9a3191228c4.ngrok-free.app/veg-data-bucket/images/{image_filename}"
+
         bubble = FlexBubble(
             direction='ltr',
             hero=FlexImage(
-                url=f"https://via.placeholder.com/450x300?text={veg_data['chinese_name']}",
+                url=image_url,
                 size='full',
                 aspect_ratio='1.5:1',
                 aspect_mode='cover',
-                action=URIAction(uri="https://example.com", label="圖片連結")
+                action=URIAction(uri=image_url, label="查看圖片")
             ),
+
+
             body=FlexBox(
                 layout='vertical',
                 contents=bubble_body_contents
