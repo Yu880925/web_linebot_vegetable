@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>蔬菜小幫手 - 智慧蔬菜服務平台</title>
+    <!-- 外部字體與圖示 -->
+    <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap"
+        rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+
+    <!-- 您自己的樣式表 -->
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="icon" href="/static/favicon.ico">
+
+    <style>
+
+    </style>
+</head>
+
+<body>
+    <!-- Mobile Header -->
+    <header class="mobile-header">
+        <button class="menu-toggle" id="menuToggle">
+            <i class="fas fa-bars"></i>
+        </button>
+        <div class="logo-mobile">
+            <img src="/static/logo.png" alt="蔬菜小幫手" style="width: 40px; height: auto;">
+            <span>蔬菜小幫手</span>
+        </div>
+    </header>
+
+    <!-- Sidebar -->
+    <aside class="sidebar" id="sidebar">
+        <div class="logo">
+            <img src="/static/logo.png" alt="蔬菜小幫手" style="width: 120px; height: auto;">
+            <h2>蔬菜小幫手</h2>
+        </div>
+        <nav class="nav-menu">
+            <a href="#overview" class="nav-item active" data-section="overview">
+                <i class="fas fa-leaf"></i>
+                <span>蔬菜總覽</span>
+            </a>
+            <a href="#recipe" class="nav-item" data-section="recipe">
+                <i class="fas fa-utensils"></i>
+                <span>食譜推薦</span>
+            </a>
+            <a href="#price" class="nav-item" data-section="price">
+                <i class="fa-solid fa-dollar-sign"></i>
+                <span>價格預測</span>
+            </a>
+        </nav>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main-content">
+        <!-- 蔬菜總覽頁 -->
+        <section id="overview" class="content-section active">
+            <div class="section-header">
+                <h1><i class="fas fa-leaf"></i> 蔬菜總覽</h1>
+                <div class="search-bar">
+                    <input type="text" placeholder="搜尋蔬菜..." id="vegetableSearch">
+                    <i class="fas fa-search"></i>
+                </div>
+            </div>
+            <div class="vegetable-grid" id="vegetableGrid">
+                <!-- 蔬菜卡片將由 JavaScript 動態生成 -->
+            </div>
+        </section>
+
+        <!-- 食譜推薦頁 -->
+        <section id="recipe" class="content-section">
+            <div class="section-header">
+                <h1><i class="fas fa-utensils"></i> 食譜推薦</h1>
+                <div class="search-bar">
+                    <input type="text" placeholder="輸入食材，如：空心菜、蒜頭..." id="recipeSearch">
+                </div>
+            </div>
+            <div class="recipe-grid" id="recipeGrid">
+                <!-- 食譜卡片將由 JavaScript 動態生成 -->
+            </div>
+        </section>
+
+        <!-- 價格預測頁 -->
+        <section id="price" class="content-section">
+            <div class="section-header">
+                <h1><i class="fa-solid fa-dollar-sign"></i> 價格預測</h1>
+                <div class="search-bar">
+                    <input type="text" placeholder="搜尋蔬菜..." id="priceSearch">
+                    <i class="fas fa-search"></i>
+                </div>
+            </div>
+            <div class="price-results" id="priceResults">
+                <!-- 價格預測結果將由 JavaScript 動態生成 -->
+            </div>
+        </section>
+    </main>
+
+    <!-- 聊天視窗 -->
+    <div class="chat-widget" id="chatWidget">
+        <div class="chat-header" id="chatHeader">
+            <i class="fas fa-comments"></i>
+            <span>AI 小助手</span>
+            <button class="chat-toggle" id="chatToggle">
+                <i class='fas fa-angle-up'></i>
+            </button>
+        </div>
+        <div class="chat-body" id="chatBody">
+            <div class="chat-messages" id="chatMessages">
+                <div class="message bot-message">
+                    <i class="fas fa-robot"></i>
+                    <span>
+                        您好！我是蔬菜小助手，有什麼蔬菜相關問題都可以問我喔！<br>
+                        1.可以輸入您想查詢的營養成分，例如：蛋白質、維生素C、鐵質<br>
+                        2.可以輸入蔬菜名稱或別名，例如：高麗菜、大白菜<br>
+                        3.可以點按相機圖示上傳蔬菜照片，讓我幫你判斷那是甚麼菜!!
+                    </span>
+
+                </div>
+            </div>
+            <div class="chat-input">
+                <input type="text" placeholder="輸入您的問題..." id="chatInput">
+                <!-- 新增的上傳按鈕 -->
+                <button id="uploadBtn"><i class="fas fa-camera"></i></button>
+                <!-- 隱藏的檔案選擇器 -->
+                <input type="file" id="imageUpload" accept="image/*" style="display: none;">
+                <button id="sendMessage"><i class="fas fa-paper-plane"></i></button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Chart.js 函式庫 -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- 您自己的 JavaScript 檔案 -->
+    <script src="/static/script.js"></script>
+</body>
+
+</html>

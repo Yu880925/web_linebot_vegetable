@@ -1,0 +1,934 @@
+/* styles.css (優化與美化後版本) */
+
+/* =================================
+   基本設定與變數 (Base & Variables)
+   ================================= */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+:root {
+    --primary-green: #80c96a;
+    --light-green: #A2D39C;
+    --dark-green: #438b49;
+    --bg-light: #F8FDF8;
+    --text-dark: #2f5231;
+    --text-light: #6B7B6C;
+    --white: #FFFFFF;
+    --shadow: 0 2px 10px rgba(32, 63, 25, 0.151);
+    --border-radius: 12px;
+    --transition: all 0.3s ease;
+}
+
+body {
+    font-family: 'Noto Sans TC', sans-serif;
+    background-color: var(--bg-light);
+    color: var(--text-dark);
+    line-height: 1.6;
+}
+
+/* =================================
+   通用按鈕樣式 (Button Styles)
+   ================================= */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 0.5rem;
+    padding: 0.75rem 1.5rem;
+    border: none;
+    border-radius: var(--border-radius);
+    font-size: 1rem;
+    font-weight: 500;
+    text-decoration: none;
+    cursor: pointer;
+    transition: var(--transition);
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+.btn-primary {
+    background: var(--primary-green);
+    color: var(--white);
+}
+
+.btn-primary:hover {
+    background: var(--dark-green);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15);
+}
+
+.btn-secondary {
+    background: var(--white);
+    color: var(--primary-green);
+    border: 2px solid var(--primary-green);
+}
+
+.btn-secondary:hover {
+    background: var(--primary-green);
+    color: var(--white);
+    transform: translateY(-2px);
+    box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+}
+
+/* 時間選擇器 (用於圖表) */
+.time-select {
+    display: flex;
+    justify-content: flex-end;
+    margin-bottom: 1rem;
+}
+
+.time-select button {
+    background-color: #f0f4f0;
+    color: var(--text-light);
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 20px;
+    font-size: 0.85rem;
+    cursor: pointer;
+    transition: var(--transition);
+    margin: 0 4px;
+}
+
+.time-select button:hover {
+    background-color: var(--light-green);
+    color: var(--white);
+}
+
+.time-select button.active {
+    background-color: var(--primary-green);
+    color: var(--white);
+    font-weight: 600;
+    box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+}
+
+
+/* =================================
+   佈局與側邊欄 (Layout & Sidebar)
+   ================================= */
+.mobile-header {
+    display: none;
+    background: var(--primary-green);
+    color: white;
+    padding: 1rem;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    z-index: 1001;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.menu-toggle {
+    background: none;
+    border: none;
+    color: white;
+    font-size: 1.5rem;
+    cursor: pointer;
+}
+
+.sidebar {
+    position: fixed;
+    left: 0;
+    top: 0;
+    width: 280px;
+    height: 100vh;
+    background: linear-gradient(135deg, var(--primary-green), var(--light-green));
+    color: white;
+    padding: 2rem 0;
+    z-index: 1000;
+    transition: var(--transition);
+}
+
+.sidebar .logo {
+    text-align: center;
+    margin-bottom: 3rem;
+    padding: 0 2rem;
+}
+
+.sidebar .logo img {
+    width: 100px;
+    margin-bottom: 0.5rem;
+}
+
+.sidebar .logo h2 {
+    font-size: 1.5rem;
+    font-weight: 600;
+}
+
+.nav-menu .nav-item {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    padding: 1rem 2rem;
+    color: rgba(255, 255, 255, 0.8);
+    text-decoration: none;
+    transition: var(--transition);
+    border-left: 4px solid transparent;
+}
+
+.nav-menu .nav-item:hover,
+.nav-menu .nav-item.active {
+    background: rgba(255, 255, 255, 0.1);
+    color: white;
+    border-left-color: white;
+}
+
+.nav-menu .nav-item i {
+    font-size: 1.2rem;
+    width: 20px;
+}
+
+.main-content {
+    margin-left: 280px;
+    padding: 2rem;
+    min-height: 100vh;
+    transition: var(--transition);
+}
+
+.content-section {
+    display: none;
+    animation: fadeIn 0.5s ease;
+}
+
+.content-section.active {
+    display: block;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(15px);
+    }
+
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
+}
+
+/* =================================
+   通用組件 (Common Components)
+   ================================= */
+.section-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 2rem;
+    flex-wrap: wrap;
+    gap: 1rem;
+}
+
+.section-header h1 {
+    color: var(--dark-green);
+    font-size: 2rem;
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.search-bar {
+    position: relative;
+    max-width: 400px;
+    flex: 1;
+}
+
+.search-bar input {
+    width: 100%;
+    padding: 0.75rem 3rem 0.75rem 1rem;
+    border: 2px solid var(--light-green);
+    border-radius: var(--border-radius);
+    font-size: 1rem;
+    transition: var(--transition);
+}
+
+.search-bar input:focus {
+    outline: none;
+    border-color: var(--primary-green);
+    box-shadow: 0 0 0 3px rgba(128, 201, 106, 0.2);
+}
+
+.search-bar i {
+    position: absolute;
+    right: 1rem;
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--text-light);
+}
+
+/* =================================
+   卡片樣式 (Card Styles)
+   ================================= */
+.vegetable-grid,
+.recipe-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 1.5rem;
+}
+
+.vegetable-card,
+.recipe-card {
+    background: var(--white);
+    border-radius: var(--border-radius);
+    overflow: hidden;
+    box-shadow: var(--shadow);
+    transition: var(--transition);
+    cursor: pointer;
+    display: flex;
+    flex-direction: column;
+}
+
+.vegetable-card:hover,
+.recipe-card:hover {
+    transform: translateY(-5px);
+    box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+}
+
+.vegetable-card img,
+.recipe-card img {
+    width: 100%;
+    height: 200px;
+    object-fit: cover;
+}
+
+.card-content {
+    padding: 1.5rem;
+    flex-grow: 1;
+    display: flex;
+    flex-direction: column;
+}
+
+.card-content h3 {
+    color: var(--dark-green);
+    margin-bottom: 0.5rem;
+    font-size: 1.25rem;
+}
+
+.card-content p {
+    color: var(--text-light);
+    font-size: 0.9rem;
+    margin-bottom: 1rem;
+    flex-grow: 1;
+}
+
+.price-info {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-top: auto;
+    padding-top: 1rem;
+    border-top: 1px solid #f0f0f0;
+}
+
+.current-price {
+    font-weight: bold;
+    color: var(--primary-green);
+    font-size: 1.2rem;
+}
+
+.price-change {
+    font-size: 0.9rem;
+    padding: 0.25rem 0.75rem;
+    border-radius: 20px;
+    font-weight: 500;
+}
+
+.price-change.increase {
+    background: #fee;
+    color: #e74c3c;
+}
+
+.price-change.decrease {
+    background: #e0f8e0;
+    color: #27ae60;
+}
+
+.recipe-meta {
+    display: flex;
+    gap: 1rem;
+    font-size: 0.8rem;
+    color: var(--text-light);
+    margin-top: auto;
+}
+
+.recipe-meta span {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+}
+
+/* =================================
+   價格預測頁 (Price Prediction Page)
+   ================================= */
+.price-results {
+    display: flex;
+    flex-direction: column;
+    gap: 1.5rem;
+}
+
+.price-card {
+    display: flex;
+    align-items: center;
+    gap: 20px;
+    padding: 20px;
+    border-radius: var(--border-radius);
+    background-color: var(--white);
+    box-shadow: var(--shadow);
+}
+
+.price-card-info {
+    flex: 0 0 200px;
+    text-align: center;
+}
+
+.price-card-info img {
+    width: 100px;
+    height: 100px;
+    object-fit: cover;
+    border-radius: 50%;
+    margin-bottom: 1rem;
+    border: 4px solid var(--bg-light);
+}
+
+.price-card-details h3 {
+    font-size: 1.25rem;
+    color: var(--dark-green);
+    margin-bottom: 0.5rem;
+}
+
+.price-card-details .price-info {
+    display: flex;
+    justify-content: center;
+    gap: 1rem;
+    align-items: center;
+}
+
+.price-card-chart-container {
+    flex: 1;
+    min-width: 0;
+}
+
+.price-card-chart {
+    position: relative;
+    height: 200px;
+    width: 100%;
+}
+
+/* =================================
+   詳細頁面 (Detail Pages)
+   ================================= */
+.detail-container {
+    max-width: 1100px;
+    margin: 0 auto;
+    padding: 1rem;
+}
+
+.back-button-container {
+    margin-bottom: 2rem;
+}
+
+/* 標頭 (Header) */
+.detail-header {
+    display: grid;
+    grid-template-columns: 350px 1fr;
+    gap: 3rem;
+    align-items: center;
+    margin-bottom: 3rem;
+    background: white;
+    padding: 2rem;
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+}
+
+.detail-header img {
+    width: 100%;
+    height: 300px;
+    object-fit: cover;
+    border-radius: var(--border-radius);
+}
+
+.detail-header h1 {
+    color: var(--dark-green);
+    font-size: 2.8rem;
+    margin-bottom: 1rem;
+}
+
+.detail-header .description {
+    font-size: 1.1rem;
+    color: var(--text-light);
+    margin-bottom: 1.5rem;
+}
+
+.detail-header .tags {
+    display: flex;
+    gap: 1rem;
+    margin-bottom: 1.5rem;
+}
+
+.detail-header .tag {
+    background: var(--light-green);
+    color: var(--white);
+    padding: 0.5rem 1rem;
+    border-radius: 20px;
+    font-size: 0.9rem;
+}
+
+.detail-header .price-change-tag.increase {
+    background: #e74c3c;
+}
+
+.detail-header .price-change-tag.decrease {
+    background: #27ae60;
+}
+
+.detail-header .current-price {
+    font-size: 1.8rem;
+    color: var(--primary-green);
+    font-weight: bold;
+}
+
+.recipe-header-meta {
+    display: flex;
+    gap: 2rem;
+    margin-top: 2rem;
+}
+
+.recipe-header-meta .meta-item {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    color: var(--text-light);
+}
+
+.recipe-header-meta .meta-item i {
+    color: var(--primary-green);
+    font-size: 1.2rem;
+}
+
+/* 區塊 (Sections) */
+.detail-section {
+    background: white;
+    padding: 2rem;
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+    margin-bottom: 2rem;
+}
+
+.detail-section h3 {
+    color: var(--dark-green);
+    margin-bottom: 1.5rem;
+    font-size: 1.6rem;
+    display: flex;
+    align-items: center;
+    gap: 0.8rem;
+    padding-bottom: 1rem;
+    border-bottom: 2px solid var(--bg-light);
+}
+
+/* 圖表 */
+.charts-container {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 2rem;
+    margin-bottom: 3rem;
+}
+
+.chart-card {
+    background: white;
+    padding: 2rem;
+    border-radius: var(--border-radius);
+    box-shadow: var(--shadow);
+}
+
+.chart-wrapper {
+    position: relative;
+    height: 300px;
+}
+
+/* 營養 */
+.nutrition-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+    gap: 1.5rem;
+}
+
+.nutrition-item {
+    text-align: center;
+    background: var(--bg-light);
+    padding: 1.5rem 1rem;
+    border-radius: var(--border-radius);
+}
+
+.nutrition-item .value {
+    font-size: 1.8rem;
+    font-weight: bold;
+    color: var(--primary-green);
+    margin-bottom: 0.3rem;
+}
+
+.nutrition-item small {
+    color: var(--text-light);
+    font-size: 0.9rem;
+}
+
+/* 食材 */
+.ingredients-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+    gap: 1rem;
+}
+
+.ingredient-item {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 1rem;
+    background: var(--bg-light);
+    border-radius: var(--border-radius);
+    border-left: 4px solid var(--light-green);
+}
+
+.ingredient-item .name {
+    font-weight: 500;
+}
+
+.ingredient-item .amount {
+    color: var(--primary-green);
+    font-weight: 600;
+}
+
+/* 步驟 */
+.steps-container {
+    display: flex;
+    flex-direction: column;
+    gap: 2.5rem;
+}
+
+.step-item {
+    display: flex;
+    gap: 1.5rem;
+    align-items: flex-start;
+}
+
+.step-number {
+    background: var(--primary-green);
+    color: white;
+    width: 40px;
+    height: 40px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-weight: bold;
+    font-size: 1.2rem;
+    flex-shrink: 0;
+    margin-top: 5px;
+}
+
+.step-content img {
+    width: 100%;
+    max-width: 300px;
+    height: auto;
+    object-fit: cover;
+    border-radius: var(--border-radius);
+    margin-bottom: 1rem;
+    float: right;
+    margin-left: 1rem;
+}
+
+.step-content .description {
+    line-height: 1.7;
+    font-size: 1.1rem;
+}
+
+/* 推薦食譜 */
+.related-recipes {
+    background: transparent;
+    padding: 0;
+    margin-top: 3rem;
+}
+
+.related-recipes h3 {
+    font-size: 1.6rem;
+    color: var(--dark-green);
+}
+
+.related-recipes .recipes-grid {
+    grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+}
+
+
+/* =================================
+   聊天視窗 (Chat Widget)
+   ================================= */
+.chat-widget {
+    position: fixed;
+    bottom: 2rem;
+    right: 2rem;
+    width: 350px;
+    background: white;
+    border-radius: var(--border-radius);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.15);
+    z-index: 1000;
+    transition: var(--transition);
+    overflow: hidden;
+}
+
+.chat-header {
+    background: var(--primary-green);
+    color: white;
+    padding: 1rem;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+.chat-header i:first-child {
+    margin-right: 0.5rem;
+}
+
+.chat-toggle {
+    background-color: transparent;
+    border: none;
+    color: white;
+    font-size: 1.2rem;
+    transition: transform 0.3s ease;
+}
+
+.chat-body {
+    max-height: 0;
+    overflow: hidden;
+    transition: max-height 0.4s ease-in-out;
+}
+
+.chat-body.active {
+    max-height: 400px;
+}
+
+.chat-header .chat-toggle i {
+    transform: rotate(180deg);
+}
+
+.chat-body.active+.chat-header .chat-toggle i {
+    transform: rotate(0deg);
+}
+
+.chat-messages {
+    height: 300px;
+    overflow-y: auto;
+    padding: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+}
+
+.message {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.75rem;
+    max-width: 90%;
+}
+
+.message i {
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.bot-message {
+    align-self: flex-start;
+}
+
+.bot-message i {
+    background: var(--primary-green);
+    color: white;
+}
+
+.bot-message span {
+    background: var(--bg-light);
+    border-radius: 0 var(--border-radius) var(--border-radius) var(--border-radius);
+}
+
+.user-message {
+    align-self: flex-end;
+    flex-direction: row-reverse;
+}
+
+.user-message i {
+    background: var(--light-green);
+    color: white;
+}
+
+.user-message span {
+    background: var(--primary-green);
+    color: white;
+    border-radius: var(--border-radius) 0 var(--border-radius) var(--border-radius);
+}
+
+.message span {
+    padding: 0.75rem 1rem;
+    font-size: 0.95rem;
+}
+
+.chat-input {
+    display: flex;
+    padding: 1rem;
+    border-top: 1px solid #eee;
+    background: #f9f9f9;
+}
+
+.chat-input input {
+    flex: 1;
+    padding: 0.75rem;
+    border: 1px solid #ddd;
+    border-radius: var(--border-radius);
+    margin-right: 0.5rem;
+}
+
+.chat-input button {
+    padding: 0.75rem 1rem;
+    /* 調整尺寸以匹配輸入框 */
+}
+
+.chat-input button i {
+    font-size: 1rem;
+}
+
+
+/* =================================
+   響應式設計 (Responsive Design)
+   ================================= */
+@media (max-width: 1200px) {
+    .detail-header {
+        grid-template-columns: 300px 1fr;
+        gap: 2rem;
+    }
+
+    .detail-header img {
+        height: 250px;
+    }
+
+    .detail-header h1 {
+        font-size: 2.2rem;
+    }
+}
+
+@media (max-width: 992px) {
+    .charts-container {
+        grid-template-columns: 1fr;
+    }
+
+    .detail-header {
+        grid-template-columns: 1fr;
+        text-align: center;
+    }
+
+    .detail-header .tags,
+    .recipe-header-meta {
+        justify-content: center;
+    }
+}
+
+@media (max-width: 768px) {
+    .mobile-header {
+        display: flex;
+    }
+
+    .sidebar {
+        transform: translateX(-100%);
+    }
+
+    .sidebar.active {
+        transform: translateX(0);
+        box-shadow: 10px 0 30px rgba(0, 0, 0, 0.2);
+    }
+
+    .main-content {
+        margin-left: 0;
+        padding: 1rem;
+        padding-top: 6rem;
+    }
+
+    .section-header {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .vegetable-grid,
+    .recipe-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .price-card {
+        flex-direction: column;
+        align-items: stretch;
+    }
+
+    .price-card-info {
+        flex: 1;
+        width: 100%;
+        margin-bottom: 15px;
+    }
+
+    .detail-header {
+        padding: 1.5rem;
+    }
+
+    .detail-section,
+    .chart-card {
+        padding: 1.5rem;
+    }
+
+    .nutrition-grid {
+        grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
+    }
+
+    .step-content img {
+        float: none;
+        margin: 0 0 1rem 0;
+        max-width: 100%;
+    }
+}
+
+@media (max-width: 480px) {
+    body {
+        font-size: 15px;
+    }
+
+    .main-content {
+        padding-top: 5rem;
+    }
+
+    .section-header h1 {
+        font-size: 1.5rem;
+    }
+
+    .detail-header h1 {
+        font-size: 1.8rem;
+    }
+
+    .detail-section h3,
+    .related-recipes h3 {
+        font-size: 1.3rem;
+    }
+
+    .nutrition-grid {
+        grid-template-columns: repeat(2, 1fr);
+        gap: 0.8rem;
+    }
+
+    .chat-widget {
+        width: 100%;
+        right: 0;
+        bottom: 0;
+        border-radius: 0;
+    }
+}
