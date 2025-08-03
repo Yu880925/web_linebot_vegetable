@@ -480,6 +480,10 @@ function setupEventListeners() {
     });
 }
 
+
+
+
+
 // 修改後的圖片上傳處理函式
 async function handleImageUpload(event) {
     const file = event.target.files[0];
@@ -505,7 +509,7 @@ async function handleImageUpload(event) {
         // 4. 使用 fetch API 將 Base64 字串發送到 Flask 後端
         try {
             // 確認後端 API 的 URL 和 port 是否正確
-            const response = await fetch('https://f00f84373bcb.ngrok-free.app/predict', {
+            const response = await fetch(`${url_5000}/predict`, {
                 method: 'POST',
                 headers: {
                     'Content-Type': 'application/json',

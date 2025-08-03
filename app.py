@@ -10,6 +10,7 @@ from logging.handlers import RotatingFileHandler
 import requests
 from dotenv import load_dotenv
 from flask import Flask, abort, render_template, request, send_from_directory, jsonify, Response
+from flask_cors import CORS
 from linebot.exceptions import InvalidSignatureError
 from linebot.v3.messaging import ApiClient, Configuration, MessagingApi
 from rec_veg.rec_veg import VegetablePredictor 
@@ -47,11 +48,14 @@ from linebot.v3.webhooks.models import (  # 確保 MessageEvent 來自 webhooks.
 
 # 新增日誌以確認 rec_veg 模組載入
 app = Flask(__name__, static_folder="static", template_folder="templates")
+CORS(app)
 
+load_dotenv()
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    url_5000 = os.getenv("URL_5000", "http://localhost:5000")
+    return render_template("index.html", url_5000=url_5000)
 
 
 # 靜態檔案路由（可選，Flask 已自動處理 /static/*，此為範例）
@@ -83,7 +87,6 @@ from nutri_rec.nutri_rec import (
     get_vegetables_by_name_or_alias,
 )
 
-load_dotenv()
 
 # 定義營養成分的中英文對應，用於格式化輸出
 NUTRIENT_DISPLAY_MAPPING = {
@@ -116,6 +119,8 @@ UNIT_ABBREVIATION_TO_CHINESE = {
     "ug": "微克",
 }
 
+
+flex_image_url = os.getenv("url_9000")
 
 # Helper function for creating Flex Message
 def _create_vegetable_flex_message(
@@ -198,7 +203,7 @@ def _create_vegetable_flex_message(
 
         veg_name = veg_data["chinese_name"]  # 例：九層塔
         image_filename = urllib.parse.quote(f"{veg_name}.jpg")
-        image_url = f"https://e19b99a21277.ngrok-free.app/veg-data-bucket/images/{image_filename}"
+        image_url = f"flex_image_url/veg-data-bucket/images/{image_filename}"
 
         bubble = FlexBubble(
             direction="ltr",
@@ -223,7 +228,7 @@ def _create_vegetable_flex_message(
                         style="link",
                         height="sm",
                         action=URIAction(
-                            label="前往網站看得更詳細", uri="https://example.com"
+                            label="前往網站看得更詳細", uri=f"url_5000/veg-data-bucket/images/{image_filename}"
                         ),
                     ),
                 ],
@@ -284,46 +289,38 @@ def callback():
     return "OK"
 
 
+
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
-    app.logger.info("進入 handle_image_message 函數 - 步驟 1")  # 改回 app.logger.info
+    app.logger.info("進入 handle_image_message 函數 ")  # 改回 app.logger.info
 
     image_filename = f"temp_image_{uuid.uuid4()}.jpg"
     try:
-        app.logger.info("嘗試從 LINE API 下載圖片 - 步驟 2")  # 改回 app.logger.info
         # 手動發 request 去 LINE 拿圖片內容
         headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
         url = f"https://api-data.line.me/v2/bot/message/{event.message.id}/content"
         response = requests.get(url, headers=headers, stream=True)
 
         if response.status_code != 200:
-            app.logger.info(
-                f"圖片下載失敗，狀態碼：{response.status_code} - 步驟 3"
-            )  # 改回 app.logger.info
             raise Exception(f"圖片下載失敗，狀態碼：{response.status_code}")
 
-        app.logger.info(
-            f"圖片下載成功，正在寫入臨時檔案: {image_filename} - 步驟 4"
-        )  # 改回 app.logger.info
         with open(image_filename, "wb") as f:
             for chunk in response.iter_content():
                 f.write(chunk)
-
-        app.logger.info(
-            f"臨時檔案寫入完成，正在轉換為 Base64 字串. File size: {os.path.getsize(image_filename)} bytes - 步驟 5"
-        )  # 改回 app.logger.info
         # 將圖片轉換為 Base64 字串
         with open(image_filename, "rb") as image_file:
             encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
-        app.logger.info(
-            "Base64 字串轉換完成，準備呼叫 rec_veg。 - 步驟 6"
-        )  # 改回 app.logger.info
+
+
+        messaging_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[TextMessage(text="圖片收到囉！正在分析～")]
+            )
+        )
 
         # 呼叫模型進行預測
         recognition_result = rec_veg(encoded_string)
-        app.logger.info(
-            f"rec_veg recognition_result: {recognition_result} - 步驟 7"
-        )  # 改回 app.logger.info
 
         # 解析 rec_veg 函式回傳的字串格式 "預測類別：[蔬菜名稱]\n信心度：[信心度]%"
         veg_name = "未知蔬菜"
@@ -400,9 +397,6 @@ def handle_image_message(event):
         )
         app.logger.info("Image recognition reply sent successfully.")  # 修改 print
     except Exception as e:
-        app.logger.info(
-            f"Error processing image or sending reply: {e} - 步驟 8"
-        )  # 改回 app.logger.info
         import traceback  # 確保導入
 
         app.logger.info(traceback.format_exc())  # 改回 app.logger.info
@@ -417,9 +411,6 @@ def handle_image_message(event):
     finally:
         if os.path.exists(image_filename):
             os.remove(image_filename)
-            app.logger.info(
-                f"Deleted temporary image file: {image_filename} - 步驟 9"
-            )  # 改回 app.logger.info
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -539,7 +530,7 @@ def get_csv(filename):
 # 模型只會被載入這一次，之後的請求都會重複使用這個 'predictor' 物件。
 try:
     predictor = VegetablePredictor(
-        model_path="model_mnV2(best).keras", classes_path="classes.csv"
+        model_path="rec_veg/model_mnV2(best).keras", classes_path="rec_veg/classes.csv"
     )
 except Exception as e:
     print(f"無法啟動應用程式: {e}")
