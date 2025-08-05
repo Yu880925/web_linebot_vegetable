@@ -14,15 +14,68 @@ const chatBody = document.getElementById('chatBody');
 const chatInput = document.getElementById('chatInput');
 const sendMessage = document.getElementById('sendMessage');
 const chatMessages = document.getElementById('chatMessages');
+const uploadBtn = document.getElementById('uploadBtn');
+const imageUpload = document.getElementById('imageUpload');
 
 // 初始化
-document.addEventListener('DOMContentLoaded', function () {
-    loadVegNameMapping();
-    loadRecipesData();
-    setupEventListeners();
+document.addEventListener('DOMContentLoaded', async function () {
+    await initializeApp();
 });
 
-// 讀取蔬菜名稱對照表
+async function initializeApp() {
+    try {
+        await Promise.all([
+            loadVegNameMapping(),
+            loadRecipesData()
+        ]);
+        // 所有非同步資料載入完成後才設定事件監聽器和渲染頁面
+        setupEventListeners();
+        renderPageBasedOnUrl();
+    } catch (error) {
+        console.error('應用程式初始化失敗:', error);
+    }
+}
+
+// 統一的頁面渲染函式，處理初始載入和歷史紀錄變更
+function renderPageBasedOnUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const section = params.get('section');
+    const vegId = params.get('id');
+
+    if (vegId) {
+        // 如果網址中有 id 參數，優先顯示詳細頁面
+        if (section === 'recipe') {
+            showRecipeDetail(vegId, false);
+        } else {
+            showVegetableDetail(vegId, false);
+        }
+    } else if (section === 'recipe') {
+        // 如果只有 section=recipe，顯示食譜列表頁
+        showSection('recipe');
+    } else if (section === 'price-prediction') {
+        // 如果只有 section=price-prediction，顯示價格預測頁
+        showSection('price-prediction');
+    } else {
+        // 沒有任何參數，顯示首頁
+        showSection('overview');
+    }
+}
+
+// 優化 popstate 事件處理
+window.addEventListener('popstate', (event) => {
+    renderPageBasedOnUrl();
+});
+
+function showSection(sectionId) {
+    document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
+    navItems.forEach(n => n.classList.remove('active'));
+    document.getElementById(sectionId).classList.add('active');
+    document.querySelector(`[data-section="${sectionId}"]`)?.classList.add('active');
+    document.getElementById('detailPage')?.remove();
+    window.scrollTo(0, 0); // 新增滾動到頂部
+}
+
+// 讀取蔬菜名稱對照表 (修改為 Promise 函式)
 async function loadVegNameMapping() {
     try {
         const response = await fetch('/api/csv/veg_name.csv');
@@ -35,15 +88,15 @@ async function loadVegNameMapping() {
                 vegNameMapping[chinese.trim()] = english.trim();
             }
         });
+        generateVegetablesData();
     } catch (error) {
         console.error('載入蔬菜名稱對照表失敗:', error);
         vegNameMapping = { '大白菜': 'Chinese Cabbage', '青江菜': 'Bok Choy', '空心菜': 'Water Spinach', '地瓜葉': 'Sweet Potato Leaves', '番茄': 'Tomato', '黃瓜': 'Cucumber' };
-    } finally {
         generateVegetablesData();
     }
 }
 
-// 讀取食譜資料
+// 讀取食譜資料 (修改為 Promise 函式)
 async function loadRecipesData() {
     try {
         const response = await fetch('/api/csv/大白菜_清理後食譜.csv');
@@ -107,7 +160,7 @@ function renderVegetables() {
     const grid = document.getElementById('vegetableGrid');
     if (!grid) return;
     grid.innerHTML = vegetables.map(veg => `
-        <div class="vegetable-card" onclick="showVegetableDetail(${veg.id})" data-name="${veg.name.toLowerCase()}">
+        <div class="vegetable-card" onclick="showVegetableDetail(${veg.id}, true)" data-name="${veg.name.toLowerCase()}">
             <img src="${veg.image}" alt="${veg.name}" loading="lazy">
             <div class="card-content">
                 <h3>${veg.name}</h3>
@@ -205,7 +258,7 @@ function renderRecipes() {
     const grid = document.getElementById('recipeGrid');
     if (!grid) return;
     grid.innerHTML = recipes.map(recipe => `
-        <div class="recipe-card" onclick="showRecipeDetail(${recipe.id})" data-name="${recipe.name.toLowerCase()}" data-ingredients="${recipe.ingredients.map(i => i.name).join(',').toLowerCase()}">
+        <div class="recipe-card" onclick="showRecipeDetail(${recipe.id}, true)" data-name="${recipe.name.toLowerCase()}" data-ingredients="${recipe.ingredients.map(i => i.name).join(',').toLowerCase()}">
             <img src="/api/image/${recipe.name}.jpg" alt="${recipe.name}" loading="lazy">
             <div class="card-content">
                 <h3>${recipe.name}</h3>
@@ -218,19 +271,22 @@ function renderRecipes() {
         </div>`).join('');
 }
 
-// *** 修正 ***
-// 顯示蔬菜詳細頁面 (已更新為符合優化後 CSS 的 class 名稱)
-function showVegetableDetail(id) {
-    const vegetable = vegetables.find(v => v.id === id);
+// 顯示蔬菜詳細頁面
+function showVegetableDetail(id, pushState = true) {
+    const vegetable = vegetables.find(v => v.id == id);
     if (!vegetable) return;
+
+    if (pushState) {
+        history.pushState({ type: 'vegetable', id: id }, '', `/?id=${id}`);
+    }
+
     document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
     navItems.forEach(n => n.classList.remove('active'));
 
-    // 移除舊的詳細頁面（如果存在）
     document.getElementById('detailPage')?.remove();
 
     let detailSection = document.createElement('section');
-    detailSection.id = 'detailPage'; // 使用通用ID
+    detailSection.id = 'detailPage';
     detailSection.className = 'content-section active';
     document.querySelector('.main-content').appendChild(detailSection);
 
@@ -289,7 +345,7 @@ function showVegetableDetail(id) {
                 ${relatedRecipes.length > 0 ? `
                     <div class="recipes-grid">
                         ${relatedRecipes.map(recipe => `
-                            <div class="recipe-card" onclick="showRecipeDetail(${recipe.id})">
+                            <div class="recipe-card" onclick="showRecipeDetail(${recipe.id}, true)">
                                 <img src="/api/image/${recipe.name}.jpg" alt="${recipe.name}" loading="lazy">
                                 <div class="card-content">
                                     <h4>${recipe.name}</h4>
@@ -320,21 +376,25 @@ function showVegetableDetail(id) {
         }
     }, 100);
     if (window.innerWidth <= 768) sidebar.classList.remove('active');
+    window.scrollTo(0, 0); // 新增滾動到頂部
 }
 
-// *** 修正 ***
-// 顯示食譜詳細頁面 (已更新為符合優化後 CSS 的 class 名稱)
-function showRecipeDetail(id) {
-    const recipe = recipes.find(r => r.id === id);
+// 顯示食譜詳細頁面
+function showRecipeDetail(id, pushState = true) {
+    const recipe = recipes.find(r => r.id == id);
     if (!recipe) return;
+
+    if (pushState) {
+        history.pushState({ type: 'recipe', id: id }, '', `/?section=recipe&id=${id}`);
+    }
+
     document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
     navItems.forEach(n => n.classList.remove('active'));
 
-    // 移除舊的詳細頁面（如果存在）
     document.getElementById('detailPage')?.remove();
 
     let detailSection = document.createElement('section');
-    detailSection.id = 'detailPage'; // 使用通用ID
+    detailSection.id = 'detailPage';
     detailSection.className = 'content-section active';
     document.querySelector('.main-content').appendChild(detailSection);
 
@@ -397,7 +457,7 @@ function showRecipeDetail(id) {
                 <h3><i class="fas fa-thumbs-up"></i> 更多推薦</h3>
                 <div class="recipes-grid">
                     ${relatedRecipes.map(r => `
-                        <div class="recipe-card" onclick="showRecipeDetail(${r.id})">
+                        <div class="recipe-card" onclick="showRecipeDetail(${r.id}, true)">
                             <img src="/api/image/${r.name}.jpg" alt="${r.name}" loading="lazy">
                             <div class="card-content">
                                 <h4>${r.name}</h4>
@@ -412,22 +472,18 @@ function showRecipeDetail(id) {
             </section>` : ''}
         </div>`;
     if (window.innerWidth <= 768) sidebar.classList.remove('active');
+    window.scrollTo(0, 0); // 新增滾動到頂部
 }
 
 // 返回函式
 function goBackToOverview() {
-    const detailSection = document.getElementById('detailPage');
-    if (detailSection) detailSection.remove();
-    document.getElementById('overview').classList.add('active');
-    navItems.forEach(nav => nav.classList.remove('active'));
-    document.querySelector('[data-section="overview"]').classList.add('active');
+    history.pushState({ page: 'overview' }, '', '/');
+    showSection('overview');
 }
+
 function goBackToRecipes() {
-    const detailSection = document.getElementById('detailPage');
-    if (detailSection) detailSection.remove();
-    document.getElementById('recipe').classList.add('active');
-    navItems.forEach(nav => nav.classList.remove('active'));
-    document.querySelector('[data-section="recipe"]').classList.add('active');
+    history.pushState({ page: 'recipe' }, '', '/?section=recipe');
+    showSection('recipe');
 }
 
 // 統一設置所有事件監聽器
@@ -437,11 +493,15 @@ function setupEventListeners() {
         item.addEventListener('click', function (e) {
             e.preventDefault();
             const targetSectionId = this.getAttribute('data-section');
-            document.getElementById('detailPage')?.remove(); // 確保動態頁面被移除
-            navItems.forEach(nav => nav.classList.remove('active'));
-            this.classList.add('active');
-            contentSections.forEach(s => s.classList.remove('active'));
-            document.getElementById(targetSectionId).classList.add('active');
+            let newUrl = '/';
+            if (targetSectionId === 'recipe') {
+                newUrl = '/?section=recipe';
+            } else if (targetSectionId === 'price-prediction') {
+                newUrl = '/?section=price-prediction';
+            }
+            history.pushState({ page: targetSectionId }, '', newUrl);
+
+            showSection(targetSectionId);
             if (window.innerWidth <= 768) sidebar.classList.remove('active');
         });
     });
@@ -479,10 +539,6 @@ function setupEventListeners() {
         });
     });
 }
-
-
-
-
 
 // 修改後的圖片上傳處理函式
 async function handleImageUpload(event) {

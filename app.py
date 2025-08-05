@@ -9,7 +9,7 @@ from logging.handlers import RotatingFileHandler
 
 import requests
 from dotenv import load_dotenv
-from flask import Flask, abort, render_template, request, send_from_directory, jsonify, Response
+from flask import Flask, abort, render_template, request, send_from_directory, jsonify, Response, send_file
 from flask_cors import CORS
 from linebot.exceptions import InvalidSignatureError
 from linebot.v3.messaging import ApiClient, Configuration, MessagingApi
@@ -54,10 +54,12 @@ load_dotenv()
 
 @app.route("/")
 def index():
-    url_5000 = os.getenv("URL_5000", "http://localhost:5000")
+    url_5000 = os.getenv("url_5000", "http://localhost:5000")
     return render_template("index.html", url_5000=url_5000)
 
-
+@app.route('/search/<veg_id>')
+def veg_search(veg_id):
+    return send_file('index.html')  # 讓前端 JavaScript 處理
 # 靜態檔案路由（可選，Flask 已自動處理 /static/*，此為範例）
 # @app.route('/static/<path:filename>')
 # def static_files(filename):
@@ -120,7 +122,7 @@ UNIT_ABBREVIATION_TO_CHINESE = {
 }
 
 
-flex_image_url = os.getenv("url_9000")
+
 
 # Helper function for creating Flex Message
 def _create_vegetable_flex_message(
@@ -201,9 +203,12 @@ def _create_vegetable_flex_message(
 
         import urllib.parse
 
+
+        flex_image_url = os.getenv("url_9000")
+        web_url = os.getenv("url_5000")
         veg_name = veg_data["chinese_name"]  # 例：九層塔
         image_filename = urllib.parse.quote(f"{veg_name}.jpg")
-        image_url = f"flex_image_url/veg-data-bucket/images/{image_filename}"
+        image_url = f"{flex_image_url}/veg-data-bucket/images/{image_filename}"
 
         bubble = FlexBubble(
             direction="ltr",
@@ -228,7 +233,7 @@ def _create_vegetable_flex_message(
                         style="link",
                         height="sm",
                         action=URIAction(
-                            label="前往網站看得更詳細", uri=f"url_5000/veg-data-bucket/images/{image_filename}"
+                            label="前往網站看得更詳細", uri=f"{web_url}/?id={veg_data['vege_id']}"
                         ),
                     ),
                 ],
@@ -310,14 +315,6 @@ def handle_image_message(event):
         # 將圖片轉換為 Base64 字串
         with open(image_filename, "rb") as image_file:
             encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
-
-
-        messaging_api.reply_message(
-            ReplyMessageRequest(
-                reply_token=event.reply_token,
-                messages=[TextMessage(text="圖片收到囉！正在分析～")]
-            )
-        )
 
         # 呼叫模型進行預測
         recognition_result = rec_veg(encoded_string)
