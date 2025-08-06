@@ -81,21 +81,31 @@ async function loadVegNameMapping() {
         const response = await fetch('/api/csv/veg_name.csv');
         const csvText = await response.text();
         const lines = csvText.split('\n');
+
+        // 修正重點：移除跳過第一行的條件判斷
+        // 現在程式碼會從 index=0 的第一行開始處理
         lines.forEach((line, index) => {
-            if (index === 0 || !line.trim()) return;
+            if (!line.trim()) return; // 只跳過空行
             const [chinese, english] = line.split(',');
             if (chinese && english) {
                 vegNameMapping[chinese.trim()] = english.trim();
             }
         });
+
+        // 這裡可以保留之前的偵錯程式碼，以確認所有資料都已正確載入
+        console.log('--- 開始檢查 vegNameMapping ---');
+        console.log('讀取到的蔬菜數量:', Object.keys(vegNameMapping).length);
+        console.log('讀取到的蔬菜名稱對照表:', vegNameMapping);
+        console.log('--- 檢查結束 ---');
+
         generateVegetablesData();
     } catch (error) {
         console.error('載入蔬菜名稱對照表失敗:', error);
+        // 如果載入失敗，使用預設值
         vegNameMapping = { '大白菜': 'Chinese Cabbage', '青江菜': 'Bok Choy', '空心菜': 'Water Spinach', '地瓜葉': 'Sweet Potato Leaves', '番茄': 'Tomato', '黃瓜': 'Cucumber' };
         generateVegetablesData();
     }
 }
-
 // 讀取食譜資料 (修改為 Promise 函式)
 async function loadRecipesData() {
     try {

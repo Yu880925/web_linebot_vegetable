@@ -233,7 +233,7 @@ def _create_vegetable_flex_message(
                         style="link",
                         height="sm",
                         action=URIAction(
-                            label="前往網站看得更詳細", uri=f"{web_url}/?id={veg_data['vege_id']}"
+                            label="前往網站看得更詳細", uri=f"{web_url}/?id={veg_data['id']}"
                         ),
                     ),
                 ],
