@@ -5,22 +5,68 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>蔬菜小幫手 - 智慧蔬菜服務平台</title>
-    <!-- 外部字體與圖示 -->
     <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+TC:wght@300;400;500;700&display=swap"
         rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
 
-    <!-- 您自己的樣式表 -->
     <link rel="stylesheet" href="/static/styles.css">
     <link rel="icon" href="/static/favicon.ico">
 
     <style>
+        /* 這裡可以放一些臨時的樣式，但建議寫在 styles.css 裡 */
+        .vegetable-tags-container {
+            margin-top: 20px;
+            margin-bottom: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
 
+        .vegetable-tag {
+            cursor: pointer;
+            background-color: #f0f0f0;
+            padding: 8px 15px;
+            border-radius: 20px;
+            font-size: 14px;
+            color: #555;
+            transition: background-color 0.3s, color 0.3s;
+            border: 1px solid #ccc;
+        }
+
+        .vegetable-tag:hover,
+        .vegetable-tag.active {
+            background-color: #4CAF50;
+            color: white;
+            border-color: #4CAF50;
+        }
+
+        .recipe-card {
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            padding: 20px;
+            margin-bottom: 20px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+            background-color: #fff;
+        }
+
+        .recipe-card h3 {
+            color: #333;
+            font-size: 20px;
+        }
+
+        .recipe-steps ol {
+            padding-left: 20px;
+        }
+
+        .recipe-steps li {
+            margin-bottom: 10px;
+            color: #666;
+            line-height: 1.6;
+        }
     </style>
 </head>
 
 <body>
-    <!-- Mobile Header -->
     <header class="mobile-header">
         <button class="menu-toggle" id="menuToggle">
             <i class="fas fa-bars"></i>
@@ -31,7 +77,6 @@
         </div>
     </header>
 
-    <!-- Sidebar -->
     <aside class="sidebar" id="sidebar">
         <div class="logo">
             <img src="/static/logo.png" alt="蔬菜小幫手" style="width: 120px; height: auto;">
@@ -53,9 +98,7 @@
         </nav>
     </aside>
 
-    <!-- Main Content -->
     <main class="main-content">
-        <!-- 蔬菜總覽頁 -->
         <section id="overview" class="content-section active">
             <div class="section-header">
                 <h1><i class="fas fa-leaf"></i> 蔬菜總覽</h1>
@@ -65,11 +108,9 @@
                 </div>
             </div>
             <div class="vegetable-grid" id="vegetableGrid">
-                <!-- 蔬菜卡片將由 JavaScript 動態生成 -->
             </div>
         </section>
 
-        <!-- 食譜推薦頁 -->
         <section id="recipe" class="content-section">
             <div class="section-header">
                 <h1><i class="fas fa-utensils"></i> 食譜推薦</h1>
@@ -77,12 +118,12 @@
                     <input type="text" placeholder="輸入食材，如：空心菜、蒜頭..." id="recipeSearch">
                 </div>
             </div>
+            <div class="vegetable-tags-container">
+            </div>
             <div class="recipe-grid" id="recipeGrid">
-                <!-- 食譜卡片將由 JavaScript 動態生成 -->
             </div>
         </section>
 
-        <!-- 價格預測頁 -->
         <section id="price" class="content-section">
             <div class="section-header">
                 <h1><i class="fa-solid fa-dollar-sign"></i> 價格預測</h1>
@@ -92,12 +133,10 @@
                 </div>
             </div>
             <div class="price-results" id="priceResults">
-                <!-- 價格預測結果將由 JavaScript 動態生成 -->
             </div>
         </section>
     </main>
 
-    <!-- 聊天視窗 -->
     <div class="chat-widget" id="chatWidget">
         <div class="chat-header" id="chatHeader">
             <i class="fas fa-comments"></i>
@@ -121,9 +160,7 @@
             </div>
             <div class="chat-input">
                 <input type="text" placeholder="輸入您的問題..." id="chatInput">
-                <!-- 新增的上傳按鈕 -->
                 <button id="uploadBtn"><i class="fas fa-camera"></i></button>
-                <!-- 隱藏的檔案選擇器 -->
                 <input type="file" id="imageUpload" accept="image/*" style="display: none;">
                 <button id="sendMessage"><i class="fas fa-paper-plane"></i></button>
             </div>
@@ -136,9 +173,7 @@
     </script>
 
 
-    <!-- Chart.js 函式庫 -->
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <!-- 您自己的 JavaScript 檔案 -->
     <script src="/static/script.js"></script>
 </body>
 

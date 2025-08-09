@@ -8,10 +8,15 @@ import requests
 from dotenv import load_dotenv
 from flask import Flask, abort, render_template, request, send_from_directory, jsonify, Response, send_file
 from flask_cors import CORS
+from collections import defaultdict
 import psycopg2
 from linebot.exceptions import InvalidSignatureError
 from linebot.v3.messaging import ApiClient, Configuration, MessagingApi
 from rec_veg.rec_veg import VegetablePredictor
+from nutri_rec.nutri_rec import (
+    get_top_vegetables_by_nutrient,
+    get_vegetables_by_name_or_alias,
+)
 import io
 import boto3
 from linebot.v3.messaging.models import (
@@ -73,10 +78,6 @@ app.logger.info("Attempting to import rec_veg...")
 from rec_veg.rec_veg import rec_veg
 app.logger.info("rec_veg imported successfully.")
 import pandas as pd
-from nutri_rec.nutri_rec import (
-    get_top_vegetables_by_nutrient,
-    get_vegetables_by_name_or_alias,
-)
 
 NUTRIENT_DISPLAY_MAPPING = {
     "calories_kcal": "熱量",
@@ -118,6 +119,31 @@ def get_db_connection():
     except Exception as e:
         app.logger.error(f"Database connection failed: {e}")
         return None
+
+# 新增 API 端點來獲取所有蔬菜清單
+@app.route('/api/vegetables', methods=['GET'])
+def get_vegetables():
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'error': '無法連接資料庫'}), 500
+
+    try:
+        cur = conn.cursor()
+        # 從 basic_vege 表格中查詢 id 和 vege_name
+        cur.execute("SELECT id, vege_name FROM basic_vege ORDER BY id;")
+        vegetables = cur.fetchall()
+
+        # 將查詢結果格式化為 JSON
+        veg_list = [{'id': veg[0], 'name': veg[1]} for veg in vegetables]
+        return jsonify(veg_list)
+
+    except Exception as e:
+        app.logger.error(f"Error fetching vegetables: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
 
 # ...
 def get_recipes_by_vege_id(vege_id):
@@ -419,6 +445,7 @@ def handle_image_message(event):
     app.logger.info("進入 handle_image_message 函數 ")
     image_filename = f"temp_image_{uuid.uuid4()}.jpg"
     try:
+        # ... (下載圖片和辨識的程式碼不變)
         headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
         url = f"https://api-data.line.me/v2/bot/message/{event.message.id}/content"
         response = requests.get(url, headers=headers, stream=True)
@@ -459,12 +486,10 @@ def handle_image_message(event):
             prefix_message_text = "歐內該  請提供更清晰的"
         if confidence >= 0.5:
             prefix_message_text += f"\n我有{confidence*100:.0f}%的信心"
-        vegetable_details = get_vegetables_by_name_or_alias(
-            veg_name,
-            nutrition_obj_name="vege_nutrition_202507211504.xlsx",
-            basic_vege_obj_name="basic_vege_202507211504_good.xlsx",
-            alias_obj_name="vege_alias_202507211504.xlsx",
-        )
+
+        # 這裡的調用已移除 MinIO 檔案名稱參數
+        vegetable_details = get_vegetables_by_name_or_alias(veg_name)
+        
         messages_to_reply = [TextMessage(text=prefix_message_text)]
         if (
             confidence >= 0.5
@@ -526,21 +551,15 @@ def handle_text_message(event):
             nutrient_input = text
             print(f"DEBUG: Processing nutrient input: '{nutrient_input}'")
 
-            recommendation_result = get_top_vegetables_by_nutrient(
-                nutrient_input,
-                nutrition_obj_name="vege_nutrition_202507211504.xlsx",
-                basic_vege_obj_name="basic_vege_202507211504_good.xlsx",
-                alias_obj_name="vege_alias_202507211504.xlsx",
-            )
+            # 這裡的調用已移除 MinIO 檔案名稱參數
+            recommendation_result = get_top_vegetables_by_nutrient(nutrient_input)
             print(f"DEBUG: Recommendation result for '{nutrient_input}': {recommendation_result}")
             
             if recommendation_result and isinstance(recommendation_result, list):
-                # 強化過的過濾和鍵名修正邏輯
                 valid_vegetables = []
                 for veg in recommendation_result:
                     if veg and (veg.get('id') or veg.get('vege_id')) and veg.get('chinese_name') and veg.get('all_nutrients'):
                         temp_veg = veg.copy()
-                        # 如果存在 'vege_id'，就將它複製到 'id' 鍵
                         if 'vege_id' in temp_veg:
                             temp_veg['id'] = temp_veg['vege_id']
                         valid_vegetables.append(temp_veg)
@@ -555,22 +574,16 @@ def handle_text_message(event):
                     print(f"DEBUG: No valid data found for '{nutrient_input}' after filtering.")
             
             if not reply_message:
-                vegetable_search_result = get_vegetables_by_name_or_alias(
-                    nutrient_input,
-                    nutrition_obj_name="vege_nutrition_202507211504.xlsx",
-                    basic_vege_obj_name="basic_vege_202507211504_good.xlsx",
-                    alias_obj_name="vege_alias_202507211504.xlsx",
-                )
+                # 這裡的調用已移除 MinIO 檔案名稱參數
+                vegetable_search_result = get_vegetables_by_name_or_alias(nutrient_input)
                 print(f"DEBUG: Vegetable search result for '{nutrient_input}': {vegetable_search_result}")
 
                 if vegetable_search_result and isinstance(vegetable_search_result, list):
                     limited_vegetable_search_result = vegetable_search_result[:12]
-                    # 強化過的過濾和鍵名修正邏輯
                     valid_vegetables = []
                     for veg in limited_vegetable_search_result:
                         if veg and (veg.get('id') or veg.get('vege_id')) and veg.get('chinese_name') and veg.get('all_nutrients'):
                             temp_veg = veg.copy()
-                            # 如果存在 'vege_id'，就將它複製到 'id' 鍵
                             if 'vege_id' in temp_veg:
                                 temp_veg['id'] = temp_veg['vege_id']
                             valid_vegetables.append(temp_veg)
@@ -658,6 +671,62 @@ def handle_prediction():
     except Exception as e:
         print(f"API 處理時發生錯誤: {e}")
         return jsonify({"error": "伺服器內部錯誤，無法辨識圖片"}), 500
+
+
+@app.route('/api/recipes/<int:veg_id>', methods=['GET'])
+def get_recipes(veg_id):
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'error': '無法連接資料庫'}), 500
+
+    try:
+        cur = conn.cursor()
+        # 使用 JOIN 語法從 main_recipe 和 recipe_steps 兩個表格中獲取資料
+        # 注意：這裡的欄位名稱已經根據你提供的資訊進行了更新
+        cur.execute("""
+            SELECT
+                mr.id,
+                mr.recipe,
+                mr.vege_id,
+                rs.step_no,
+                rs.description
+            FROM main_recipe AS mr
+            JOIN recipe_steps AS rs ON mr.id = rs.recipe_id
+            WHERE mr.vege_id = %s
+            ORDER BY mr.id, rs.step_no;
+        """, (veg_id,))
+        rows = cur.fetchall()
+
+        if not rows:
+            return jsonify({'message': '查無此蔬菜的食譜'}), 404
+
+        # 將資料處理成一個適合前端使用的 JSON 格式
+        recipes = defaultdict(lambda: {
+            'recipe_id': None,
+            'recipe_name': '',
+            'vege_id': None,
+            'steps': []
+        })
+
+        for row in rows:
+            recipe_id = row[0]
+            recipes[recipe_id]['recipe_id'] = row[0]
+            recipes[recipe_id]['recipe_name'] = row[1]
+            recipes[recipe_id]['vege_id'] = row[2]
+            recipes[recipe_id]['steps'].append({
+                'step_no': row[3],
+                'description': row[4]
+            })
+
+        return jsonify(list(recipes.values()))
+
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    finally:
+        cur.close()
+        conn.close()
+
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))

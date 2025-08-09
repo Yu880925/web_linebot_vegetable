@@ -59,7 +59,7 @@ def create_and_upload_rich_menu():
                     ),
                     RichMenuArea(
                         bounds=RichMenuBounds(x=1666, y=0, width=834, height=843),
-                        action=MessageAction(text="輸入現有實材")
+                        action=MessageAction(text="輸入現有食材")
                     )
                 ]
             )
@@ -69,7 +69,7 @@ def create_and_upload_rich_menu():
         print(f"成功創建 Rich Menu, ID: {rich_menu_id_str}")
 
         # 3. 上傳 Rich Menu 圖片
-        image_path = "richmenu_vege.png"
+        image_path = "richmenu_vege.jpg"
         if not os.path.exists(image_path):
             print(f"錯誤: 圖片檔案不存在於 {image_path}")
             return
