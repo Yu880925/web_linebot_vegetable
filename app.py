@@ -1,26 +1,19 @@
-import base64  # 新增 base64 模組
-
-# 新增 logging 模組
+import base64
 import logging
 import os
-import sys  # 為了配置 StreamHandler 再次導入
-import uuid  # 新增 uuid 模組
+import sys
+import uuid
 from logging.handlers import RotatingFileHandler
-
 import requests
 from dotenv import load_dotenv
 from flask import Flask, abort, render_template, request, send_from_directory, jsonify, Response, send_file
 from flask_cors import CORS
+import psycopg2
 from linebot.exceptions import InvalidSignatureError
 from linebot.v3.messaging import ApiClient, Configuration, MessagingApi
-from rec_veg.rec_veg import VegetablePredictor 
-
+from rec_veg.rec_veg import VegetablePredictor
 import io
-
-# === 新增：MinIO 取圖/取 CSV API ===
 import boto3
-
-# 確保 TextMessageContent 來自 webhooks.models
 from linebot.v3.messaging.models import (
     CameraAction,
     CameraRollAction,
@@ -38,13 +31,19 @@ from linebot.v3.messaging.models import (
     ReplyMessageRequest,
     TextMessage,
     URIAction,
+    PostbackAction,
 )
 from linebot.v3.webhook import WebhookHandler
-from linebot.v3.webhooks.models import (  # 確保 MessageEvent 來自 webhooks.models
+from linebot.v3.webhooks.models import (
     ImageMessageContent,
     MessageEvent,
     TextMessageContent,
 )
+
+# 新增
+from linebot.v3.webhooks.models import PostbackEvent  # 匯入 PostbackEvent
+import json # 新增 json 模組
+
 
 # 新增日誌以確認 rec_veg 模組載入
 app = Flask(__name__, static_folder="static", template_folder="templates")
@@ -59,18 +58,11 @@ def index():
 
 @app.route('/search/<veg_id>')
 def veg_search(veg_id):
-    return send_file('index.html')  # 讓前端 JavaScript 處理
-# 靜態檔案路由（可選，Flask 已自動處理 /static/*，此為範例）
-# @app.route('/static/<path:filename>')
-# def static_files(filename):
-#     return send_from_directory(app.static_folder, filename)
+    return send_file('index.html')
 
-# 配置 Flask 應用程式的日誌
-app.logger.setLevel(logging.INFO)  # 設定日誌級別為 INFO
-# 移除所有現有的處理器，避免重複日誌
+app.logger.setLevel(logging.INFO)
 for handler in app.logger.handlers:
     app.logger.removeHandler(handler)
-# 添加一個 StreamHandler，將日誌輸出到標準輸出 (stdout)
 handler = logging.StreamHandler(sys.stdout)
 formatter = logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
 handler.setFormatter(formatter)
@@ -78,19 +70,14 @@ app.logger.addHandler(handler)
 
 
 app.logger.info("Attempting to import rec_veg...")
-from rec_veg.rec_veg import rec_veg  # 匯入辨識函數
-
+from rec_veg.rec_veg import rec_veg
 app.logger.info("rec_veg imported successfully.")
-
-import pandas as pd  # 新增 pandas 模組
-
+import pandas as pd
 from nutri_rec.nutri_rec import (
     get_top_vegetables_by_nutrient,
     get_vegetables_by_name_or_alias,
 )
 
-
-# 定義營養成分的中英文對應，用於格式化輸出
 NUTRIENT_DISPLAY_MAPPING = {
     "calories_kcal": "熱量",
     "water_g": "水",
@@ -112,7 +99,6 @@ NUTRIENT_DISPLAY_MAPPING = {
     "vitamin_b1_mg": "維生素B1",
     "folic_acid_ug": "葉酸",
 }
-
 UNIT_ABBREVIATION_TO_CHINESE = {
     "kcal": "大卡",
     "g": "克",
@@ -121,10 +107,114 @@ UNIT_ABBREVIATION_TO_CHINESE = {
     "ug": "微克",
 }
 
+# === 新增：資料庫連線函式 ===
+def get_db_connection():
+    """建立並回傳 PostgreSQL 資料庫連線"""
+    try:
+        DATABASE_URL = os.getenv("DATABASE_URL")
+        app.logger.info(f"Connecting to database at {DATABASE_URL}")
+        conn = psycopg2.connect(DATABASE_URL)
+        return conn
+    except Exception as e:
+        app.logger.error(f"Database connection failed: {e}")
+        return None
+
+# ...
+def get_recipes_by_vege_id(vege_id):
+    """根據 vege_id 查詢食譜及其步驟"""
+    conn = get_db_connection()
+    if not conn:
+        return []
+    
+    recipes_data = []
+    try:
+        cur = conn.cursor()
+        
+        # 1. 查詢 main_recipe 資料表
+        cur.execute("SELECT id, recipe FROM main_recipe WHERE vege_id = %s LIMIT 10", (vege_id,))
+        main_recipes = cur.fetchall()
+        
+        # 定義一個預設圖片網址
+        default_image_url = "https://i.imgur.com/your-default-image.png"
+        
+        for recipe_id, recipe_name in main_recipes:
+            # 2. 針對每個食譜，查詢 recipe_steps
+            cur.execute("SELECT description FROM recipe_steps WHERE recipe_id = %s ORDER BY step_no ASC", (recipe_id,))
+            all_steps = cur.fetchall()
+            
+            steps_list = [step[0] for step in all_steps]
+            
+            recipe_description = steps_list[0] if steps_list else ""
+            
+            recipes_data.append({
+                "id": recipe_id,
+                "name": recipe_name,
+                "description": recipe_description,
+                "image_url": default_image_url, # 使用預設圖片網址
+                "steps": steps_list
+            })
+            
+    except (Exception, psycopg2.DatabaseError) as error:
+        app.logger.error(f"Database query failed: {error}")
+        return []
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+            
+    return recipes_data
+
+def create_recipe_flex_carousel(recipes_data):
+    """根據食譜資料建立 Flex Carousel"""
+    if not recipes_data:
+        return None
+        
+    bubbles = []
+    for recipe in recipes_data:
+        steps_text = "步驟：\n" + "\n".join(
+            [f"{i+1}. {step}" for i, step in enumerate(recipe["steps"])]
+        )
+        
+        bubble_body_contents = [
+            FlexText(text=recipe["name"], weight="bold", size="xl", wrap=True),
+            FlexText(text=recipe["description"], size="sm", color="#aaaaaa", wrap=True, margin="sm"),
+            FlexText(text=steps_text, size="sm", color="#555555", wrap=True, margin="md"),
+        ]
+        
+        web_url = os.getenv("url_5000")
+        
+        bubble = FlexBubble(
+            direction="ltr",
+            hero=FlexImage(
+                url=recipe["image_url"],
+                size="full",
+                aspect_ratio="1.5:1",
+                aspect_mode="cover",
+                action=URIAction(uri=recipe["image_url"], label="查看圖片"),
+            ),
+            body=FlexBox(layout="vertical", contents=bubble_body_contents),
+            footer=FlexBox(
+                layout="vertical",
+                spacing="sm",
+                contents=[
+                    FlexButton(
+                        style="link",
+                        height="sm",
+                        action=URIAction(
+                            label="前往網站看得更詳細", uri=f"{web_url}/?id={recipe['id']}"
+                        ),
+                    ),
+                ],
+            ),
+        )
+        bubbles.append(bubble)
+        
+    return FlexMessage(
+        alt_text="相關食譜",
+        contents=FlexCarousel(contents=bubbles)
+    )
 
 
-
-# Helper function for creating Flex Message
 def _create_vegetable_flex_message(
     veg_data_list, alt_text_prefix, is_nutrient_search=False
 ):
@@ -136,13 +226,12 @@ def _create_vegetable_flex_message(
             else "無別名"
         )
         all_nutrients_detail = []
-        # Assuming veg_data['all_nutrients'] is a dictionary
         for i, (nutrient_key, nutrient_value) in enumerate(
             veg_data["all_nutrients"].items()
         ):
-            if i < 2:  # Skip first two
+            if i < 2:
                 continue
-            if i >= 7:  # Limit to 5 nutrients (2 to 6)
+            if i >= 7:
                 break
             display_name = NUTRIENT_DISPLAY_MAPPING.get(nutrient_key, "")
             if not display_name:
@@ -170,7 +259,6 @@ def _create_vegetable_flex_message(
         all_nutrients_text = "營養資訊(每100 克可食部分)：\n" + "\n".join(
             all_nutrients_detail
         )
-
         bubble_body_contents = [
             FlexText(text=veg_data["chinese_name"], weight="bold", size="xl"),
             FlexText(
@@ -184,8 +272,6 @@ def _create_vegetable_flex_message(
                 margin="md",
             ),
         ]
-
-        # Conditionally add nutrient search specific text
         if (
             is_nutrient_search
             and "nutrient_name" in veg_data
@@ -202,75 +288,72 @@ def _create_vegetable_flex_message(
             )
 
         import urllib.parse
-
-
         flex_image_url = os.getenv("url_9000")
         web_url = os.getenv("url_5000")
-        veg_name = veg_data["chinese_name"]  # 例：九層塔
+        veg_name = veg_data["chinese_name"]
         image_filename = urllib.parse.quote(f"{veg_name}.jpg")
         image_url = f"{flex_image_url}/veg-data-bucket/images/{image_filename}"
 
         bubble = FlexBubble(
-            direction="ltr",
-            hero=FlexImage(
-                url=image_url,
-                size="full",
-                aspect_ratio="1.5:1",
-                aspect_mode="cover",
-                action=URIAction(uri=image_url, label="查看圖片"),
-            ),
-            body=FlexBox(layout="vertical", contents=bubble_body_contents),
-            footer=FlexBox(
-                layout="vertical",
-                spacing="sm",
-                contents=[
-                    FlexButton(
-                        style="link",
-                        height="sm",
-                        action=MessageAction(label="查看相關食譜", text="查看相關食譜"),
-                    ),
-                    FlexButton(
-                        style="link",
-                        height="sm",
-                        action=URIAction(
-                            label="前往網站看得更詳細", uri=f"{web_url}/?id={veg_data['id']}"
-                        ),
-                    ),
-                ],
-            ),
-        )
+    direction="ltr",
+    hero=FlexImage(
+        url=image_url,
+        size="full",
+        aspect_ratio="1.5:1",
+        aspect_mode="cover",
+        action=URIAction(uri=image_url, label="查看圖片"),
+    ),
+    body=FlexBox(layout="vertical", contents=bubble_body_contents),
+    footer=FlexBox(
+        layout="vertical",
+        spacing="sm",
+        contents=[
+            # 這裡加入條件判斷，只有當 veg_data 包含 'id' 時才建立按鈕
+            FlexButton(
+                style="link",
+                height="sm",
+                action=PostbackAction(
+                    label="查看相關食譜",
+                    data=f"action=get_recipes&veg_id={veg_data['id']}",
+                    display_text="為您查詢相關食譜..."
+                ),
+            ) if 'id' in veg_data else None,
+            FlexButton(
+                style="link",
+                height="sm",
+                action=URIAction(
+                    label="前往網站看得更詳細", uri=f"{web_url}/?id={veg_data['id']}"
+                ),
+            ) if 'id' in veg_data else None,
+        ],
+    ),
+)
         bubbles.append(bubble)
-
     if not bubbles:
         return TextMessage(
             text="沒有找到符合條件的蔬菜。"
-        )  # Fallback to text message if no bubbles
+        )
     else:
         return FlexMessage(
             alt_text=f"{alt_text_prefix}相關蔬菜",
             contents=FlexCarousel(contents=bubbles),
         )
 
-
-LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")  # 移除預設值
-LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")  # 移除預設值
-
-# 確保環境變數已載入，否則應用程式無法啟動
+# ... (其餘程式碼不變)
+LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET:
     raise ValueError(
         "LINE_CHANNEL_ACCESS_TOKEN or LINE_CHANNEL_SECRET not set in environment variables."
     )
-
 app.logger.info(
     f"LINE_CHANNEL_ACCESS_TOKEN loaded (length: {len(LINE_CHANNEL_ACCESS_TOKEN)})"
 )
 app.logger.info(f"LINE_CHANNEL_SECRET loaded (length: {len(LINE_CHANNEL_SECRET)})")
-
 configuration = Configuration(access_token=LINE_CHANNEL_ACCESS_TOKEN)
 api_client = ApiClient(configuration)
 messaging_api = MessagingApi(api_client)
 handler = WebhookHandler(LINE_CHANNEL_SECRET)
-
 
 @app.route("/callback", methods=["POST"])
 def callback():
@@ -278,74 +361,93 @@ def callback():
     body = request.get_data(as_text=True)
     app.logger.info("Request body: " + body)
     app.logger.info("Request signature: " + signature)
-
     try:
         handler.handle(body, signature)
     except InvalidSignatureError:
         app.logger.error("Invalid signature. Request body: " + body)
-        # 如果是簽名錯誤，直接返回 400，並停止進一步處理
         abort(400)
     except Exception as e:
         import traceback
-
-        app.logger.error(f"Unhandled exception in callback: {e}")  # 更新錯誤訊息
+        app.logger.error(f"Unhandled exception in callback: {e}")
         app.logger.error(traceback.format_exc())
         abort(500)
     return "OK"
 
+# 新增 PostbackEvent 處理
+@handler.add(PostbackEvent)
+def handle_postback(event):
+    data = event.postback.data
+    app.logger.info(f"Received postback data: {data}")
+    
+    # 檢查是否為食譜查詢
+    if data.startswith("action=get_recipes"):
+        # 解析 veg_id
+        try:
+            params = dict(param.split('=') for param in data.split('&'))
+            veg_id = int(params.get('veg_id'))
+        except (ValueError, KeyError):
+            messaging_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text="食譜查詢參數錯誤。")]
+                )
+            )
+            return
 
+        # 查詢食譜
+        recipes = get_recipes_by_vege_id(veg_id)
+        
+        # 建立回覆訊息
+        if recipes:
+            flex_message = create_recipe_flex_carousel(recipes)
+            messaging_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[flex_message]
+                )
+            )
+        else:
+            messaging_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text="找不到相關食譜喔！")]
+                )
+            )
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):
-    app.logger.info("進入 handle_image_message 函數 ")  # 改回 app.logger.info
-
+    app.logger.info("進入 handle_image_message 函數 ")
     image_filename = f"temp_image_{uuid.uuid4()}.jpg"
     try:
-        # 手動發 request 去 LINE 拿圖片內容
         headers = {"Authorization": f"Bearer {LINE_CHANNEL_ACCESS_TOKEN}"}
         url = f"https://api-data.line.me/v2/bot/message/{event.message.id}/content"
         response = requests.get(url, headers=headers, stream=True)
-
         if response.status_code != 200:
             raise Exception(f"圖片下載失敗，狀態碼：{response.status_code}")
-
         with open(image_filename, "wb") as f:
             for chunk in response.iter_content():
                 f.write(chunk)
-        # 將圖片轉換為 Base64 字串
         with open(image_filename, "rb") as image_file:
             encoded_string = base64.b64encode(image_file.read()).decode("utf-8")
-
-        # 呼叫模型進行預測
         recognition_result = rec_veg(encoded_string)
-
-        # 解析 rec_veg 函式回傳的字串格式 "預測類別：[蔬菜名稱]\n信心度：[信心度]%"
         veg_name = "未知蔬菜"
         confidence = 0.0
-
         try:
             lines = recognition_result.split("\n")
             if len(lines) >= 2:
-                # 解析蔬菜名稱
                 if "預測類別：" in lines[0]:
                     veg_name = lines[0].replace("預測類別：", "").strip()
-
-                # 解析信心度
                 if "信心度：" in lines[1]:
                     confidence_str = (
                         lines[1].replace("信心度：", "").replace("%", "").strip()
                     )
-                    confidence = float(confidence_str) / 100.0  # 轉換為0-1之間的小數
-
+                    confidence = float(confidence_str) / 100.0
         except Exception as e:
-            app.logger.error(f"解析 recognition_result 失敗: {e}")  # 修改 print
-            import traceback  # 確保導入
-
-            app.logger.error(traceback.format_exc())  # 打印追溯
-            # 如果解析失敗，使用預設值
+            app.logger.error(f"解析 recognition_result 失敗: {e}")
+            import traceback
+            app.logger.error(traceback.format_exc())
             veg_name = "未知蔬菜"
             confidence = 0.0
-
         prefix_message_text = ""
         if confidence >= 0.8:
             prefix_message_text = f'哼哼 根據我的判斷 它就是"{veg_name}"!!'
@@ -355,66 +457,58 @@ def handle_image_message(event):
             prefix_message_text = f'可能是"{veg_name}"   也許讓我再看更清楚的一張'
         else:
             prefix_message_text = "歐內該  請提供更清晰的"
-
-        # 在訊息最後加上信心度 (如果信心度大於等於50%)
         if confidence >= 0.5:
             prefix_message_text += f"\n我有{confidence*100:.0f}%的信心"
-
-        # 根據辨識結果獲取蔬菜詳細資訊
         vegetable_details = get_vegetables_by_name_or_alias(
-            veg_name,  # 將辨識到的蔬菜名稱作為搜尋詞
+            veg_name,
             nutrition_obj_name="vege_nutrition_202507211504.xlsx",
             basic_vege_obj_name="basic_vege_202507211504_good.xlsx",
             alias_obj_name="vege_alias_202507211504.xlsx",
         )
-
         messages_to_reply = [TextMessage(text=prefix_message_text)]
-
-        # 如果信心度大於等於50%，才顯示字卡
         if (
             confidence >= 0.5
             and vegetable_details
             and not isinstance(vegetable_details, str)
-        ):  # 如果有找到蔬菜資料
+        ):
             flex_message = _create_vegetable_flex_message(
                 vegetable_details, f"辨識結果：{veg_name}"
             )
-            if flex_message:  # 確保 flex_message 不是 None 或錯誤訊息
+            if flex_message:
                 messages_to_reply.append(flex_message)
         elif confidence < 0.5:
-            # 如果信心度小於50%，則不顯示字卡，只顯示文字訊息
-            pass  # 這裡不需要做任何事，因為上面已經設定了文字訊息
+            pass
         else:
             messages_to_reply.append(TextMessage(text="未能找到該蔬菜的詳細資訊。"))
-
         messaging_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token, messages=messages_to_reply
             )
         )
-        app.logger.info("Image recognition reply sent successfully.")  # 修改 print
+        app.logger.info("Image recognition reply sent successfully.")
     except Exception as e:
-        import traceback  # 確保導入
-
-        app.logger.info(traceback.format_exc())  # 改回 app.logger.info
+        import traceback
+        app.logger.info(traceback.format_exc())
         messaging_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token,
                 messages=[
                     TextMessage(text=f"圖片處理失敗：{e}")
-                ],  # 可以換成更可愛一點的錯誤訊息～？
+                ],
             )
         )
     finally:
         if os.path.exists(image_filename):
             os.remove(image_filename)
 
-
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     print(f"Received text: {event.message.text}")
     try:
-        if event.message.text == "上傳圖片":
+        reply_message = None
+        text = event.message.text.strip()
+
+        if text == "上傳圖片":
             reply_message = TextMessage(
                 text="請選擇拍照或從相簿選擇圖片(請盡量讓背景單純)：",
                 quick_reply=QuickReply(
@@ -424,66 +518,88 @@ def handle_text_message(event):
                     ]
                 ),
             )
-        elif event.message.text == "輸入營養成分":
+        elif text == "輸入營養成分":
             reply_message = TextMessage(
                 text="請輸入您想查詢的營養成分，例如：蛋白質、維生素C、鐵質\n您也可以輸入蔬菜名稱或別名，例如：高麗菜、大白菜"
             )
         else:
-            nutrient_input = event.message.text.strip()
+            nutrient_input = text
+            print(f"DEBUG: Processing nutrient input: '{nutrient_input}'")
+
             recommendation_result = get_top_vegetables_by_nutrient(
                 nutrient_input,
-                nutrition_obj_name="vege_nutrition_202507211504.xlsx",  # 修改為物件名稱
-                basic_vege_obj_name="basic_vege_202507211504_good.xlsx",  # 修改為物件名稱
-                alias_obj_name="vege_alias_202507211504.xlsx",  # 修改為物件名稱
+                nutrition_obj_name="vege_nutrition_202507211504.xlsx",
+                basic_vege_obj_name="basic_vege_202507211504_good.xlsx",
+                alias_obj_name="vege_alias_202507211504.xlsx",
             )
-
-            if not recommendation_result or isinstance(
-                recommendation_result, str
-            ):  # 如果營養成分查詢無結果或有錯誤
-                # 嘗試進行蔬菜名稱或別名查詢
-                vegetable_search_result = get_vegetables_by_name_or_alias(
-                    nutrient_input,  # 將使用者輸入作為搜尋詞
-                    nutrition_obj_name="vege_nutrition_202507211504.xlsx",  # 修改為物件名稱
-                    basic_vege_obj_name="basic_vege_202507211504_good.xlsx",  # 修改為物件名稱
-                    alias_obj_name="vege_alias_202507211504.xlsx",  # 修改為物件名稱
-                )
-                if not vegetable_search_result or isinstance(
-                    vegetable_search_result, str
-                ):  # 如果蔬菜名稱查詢也無結果或有錯誤
-                    reply_message = TextMessage(
-                        text="沒有找到符合條件的營養成分或蔬菜。請檢查您的輸入。"
+            print(f"DEBUG: Recommendation result for '{nutrient_input}': {recommendation_result}")
+            
+            if recommendation_result and isinstance(recommendation_result, list):
+                # 強化過的過濾和鍵名修正邏輯
+                valid_vegetables = []
+                for veg in recommendation_result:
+                    if veg and (veg.get('id') or veg.get('vege_id')) and veg.get('chinese_name') and veg.get('all_nutrients'):
+                        temp_veg = veg.copy()
+                        # 如果存在 'vege_id'，就將它複製到 'id' 鍵
+                        if 'vege_id' in temp_veg:
+                            temp_veg['id'] = temp_veg['vege_id']
+                        valid_vegetables.append(temp_veg)
+                
+                if valid_vegetables:
+                    reply_message = _create_vegetable_flex_message(
+                        valid_vegetables,
+                        f"為您推薦 {nutrient_input} 含量最高的蔬菜",
+                        is_nutrient_search=True,
                     )
                 else:
-                    # 限制蔬菜名稱查詢結果的數量，最多12個
-                    limited_vegetable_search_result = vegetable_search_result[:12]
-                    reply_message = _create_vegetable_flex_message(
-                        limited_vegetable_search_result,
-                        f"為您推薦 {nutrient_input} 相關蔬菜",
-                    )
-
-            else:
-                # 使用營養成分查詢結果來構建 Flex Message
-                reply_message = _create_vegetable_flex_message(
-                    recommendation_result,
-                    f"為您推薦 {nutrient_input} 含量最高的蔬菜",
-                    is_nutrient_search=True,
+                    print(f"DEBUG: No valid data found for '{nutrient_input}' after filtering.")
+            
+            if not reply_message:
+                vegetable_search_result = get_vegetables_by_name_or_alias(
+                    nutrient_input,
+                    nutrition_obj_name="vege_nutrition_202507211504.xlsx",
+                    basic_vege_obj_name="basic_vege_202507211504_good.xlsx",
+                    alias_obj_name="vege_alias_202507211504.xlsx",
                 )
+                print(f"DEBUG: Vegetable search result for '{nutrient_input}': {vegetable_search_result}")
 
-        messaging_api.reply_message(
-            ReplyMessageRequest(reply_token=event.reply_token, messages=[reply_message])
-        )
-        print("Reply sent successfully.")
+                if vegetable_search_result and isinstance(vegetable_search_result, list):
+                    limited_vegetable_search_result = vegetable_search_result[:12]
+                    # 強化過的過濾和鍵名修正邏輯
+                    valid_vegetables = []
+                    for veg in limited_vegetable_search_result:
+                        if veg and (veg.get('id') or veg.get('vege_id')) and veg.get('chinese_name') and veg.get('all_nutrients'):
+                            temp_veg = veg.copy()
+                            # 如果存在 'vege_id'，就將它複製到 'id' 鍵
+                            if 'vege_id' in temp_veg:
+                                temp_veg['id'] = temp_veg['vege_id']
+                            valid_vegetables.append(temp_veg)
+
+                    if valid_vegetables:
+                        reply_message = _create_vegetable_flex_message(
+                            valid_vegetables,
+                            f"為您推薦 {nutrient_input} 相關蔬菜",
+                        )
+                    else:
+                        print(f"DEBUG: No valid data found for '{nutrient_input}' after filtering.")
+            
+            if not reply_message:
+                reply_message = TextMessage(text="沒有找到符合條件的營養成分或蔬菜。請檢查您的輸入。")
+
+        if reply_message:
+            messaging_api.reply_message(
+                ReplyMessageRequest(reply_token=event.reply_token, messages=[reply_message])
+            )
+            print("Reply sent successfully.")
+
     except Exception as e:
         print(f"Failed to reply: {e}")
 
 
 
-
-
-
-
 @app.route("/api/image/<filename>")
 def get_image(filename):
+    # ... (MinIO 函式不變)
     s3 = boto3.client(
         "s3",
         endpoint_url=os.getenv("MINIO_ENDPOINT"),
@@ -499,9 +615,9 @@ def get_image(filename):
     except Exception as e:
         return "Not found", 404
 
-
 @app.route("/api/csv/<filename>")
 def get_csv(filename):
+    # ... (MinIO 函式不變)
     s3 = boto3.client(
         "s3",
         endpoint_url=os.getenv("MINIO_ENDPOINT"),
@@ -520,37 +636,25 @@ def get_csv(filename):
         app.logger.error(f"MinIO 取檔失敗: {e}")
         return "Not found", 404
 
-
-
-
-# --- 應用程式啟動時，建立一個預測器物件 ---
-# 模型只會被載入這一次，之後的請求都會重複使用這個 'predictor' 物件。
 try:
     predictor = VegetablePredictor(
         model_path="rec_veg/model_mnV2(best).keras", classes_path="rec_veg/classes.csv"
     )
 except Exception as e:
     print(f"無法啟動應用程式: {e}")
-    # 在實際部署中，您可能希望在此處退出程式
     predictor = None
 
-
-
-# 圖片預測 API
 @app.route("/predict", methods=["POST"])
 def handle_prediction():
     if not predictor:
         return jsonify({"error": "伺服器初始化失敗，模型未載入。"}), 500
-
     try:
         data = request.get_json()
         if not data or "image" not in data:
             return jsonify({"error": "請求格式錯誤，未包含 'image' 欄位"}), 400
-
         base64_image = data["image"]
         prediction_result = predictor.predict(base64_image)
         return jsonify(prediction_result)
-
     except Exception as e:
         print(f"API 處理時發生錯誤: {e}")
         return jsonify({"error": "伺服器內部錯誤，無法辨識圖片"}), 500
