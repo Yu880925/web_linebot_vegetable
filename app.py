@@ -121,20 +121,50 @@ def get_db_connection():
         return None
 
 # 新增 API 端點來獲取所有蔬菜清單
+# ... (其他程式碼不變)
 @app.route('/api/vegetables', methods=['GET'])
 def get_vegetables():
+    import random
     conn = get_db_connection()
     if conn is None:
         return jsonify({'error': '無法連接資料庫'}), 500
 
     try:
         cur = conn.cursor()
-        # 從 basic_vege 表格中查詢 id 和 vege_name
-        cur.execute("SELECT id, vege_name FROM basic_vege ORDER BY id;")
-        vegetables = cur.fetchall()
+        cur.execute("SELECT id, vege_name FROM basic_vege ORDER BY vege_name;")
+        rows = cur.fetchall()
 
-        # 將查詢結果格式化為 JSON
-        veg_list = [{'id': veg[0], 'name': veg[1]} for veg in vegetables]
+        veg_list = []
+        for veg_id, veg_name in rows:
+            # 隨機價格歷史
+            base_price = random.randint(20, 40)
+            price_history = [max(5, base_price + random.randint(-3, 3)) for _ in range(30)]
+            current_price = price_history[-1]
+            previous_price = price_history[-2]
+            price_change = (
+                f"{'+' if current_price - previous_price >= 0 else ''}"
+                f"{round((current_price - previous_price) / previous_price * 100, 1)}%"
+            )
+
+            veg_list.append({
+                'id': veg_id,
+                'name': veg_name,
+                'description': f"新鮮{veg_name}，營養豐富，是您餐桌上的最佳選擇。",
+                'season': random.choice(['春季', '夏季', '秋季', '冬季', '全年']),
+                'priceChange': price_change,
+                'currentPrice': current_price,
+                'image': f"{os.getenv('url_9000')}/veg-data-bucket/images/{veg_name}.jpg",
+                'priceHistory': price_history,
+                'nutrition': {
+                    '熱量': random.randint(15, 50),
+                    '纖維': round(random.uniform(1, 5), 1),
+                    '維生素C': random.randint(10, 100),
+                    '維生素A': random.randint(0, 500),
+                    '鐵質': round(random.uniform(0.3, 3), 1),
+                    '鈣質': random.randint(10, 150)
+                }
+            })
+
         return jsonify(veg_list)
 
     except Exception as e:
@@ -145,7 +175,128 @@ def get_vegetables():
             cur.close()
             conn.close()
 
-# ...
+
+@app.route('/api/vegetables/<int:veg_id>', methods=['GET'])
+def get_vegetable_detail(veg_id):
+    import random
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'error': '無法連接資料庫'}), 500
+
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, vege_name FROM basic_vege WHERE id = %s;", (veg_id,))
+        row = cur.fetchone()
+        if not row:
+            return jsonify({'error': '找不到蔬菜'}), 404
+
+        veg_id, veg_name = row
+        base_price = random.randint(20, 40)
+        price_history = [max(5, base_price + random.randint(-3, 3)) for _ in range(30)]
+        current_price = price_history[-1]
+        previous_price = price_history[-2]
+        price_change = (
+            f"{'+' if current_price - previous_price >= 0 else ''}"
+            f"{round((current_price - previous_price) / previous_price * 100, 1)}%"
+        )
+
+        vegetable = {
+            'id': veg_id,
+            'name': veg_name,
+            'description': f"新鮮{veg_name}，營養豐富，是您餐桌上的最佳選擇。",
+            'season': random.choice(['春季', '夏季', '秋季', '冬季', '全年']),
+            'priceChange': price_change,
+            'currentPrice': current_price,
+            'image': f"{os.getenv('url_9000')}/veg-data-bucket/images/{veg_name}.jpg",
+            'imageUrl': f"{os.getenv('url_9000')}/veg-data-bucket/images/{veg_name}.jpg",
+            'priceHistory': price_history,
+            'nutrition': {
+                '熱量': random.randint(15, 50),
+                '纖維': round(random.uniform(1, 5), 1),
+                '維生素C': random.randint(10, 100),
+                '維生素A': random.randint(0, 500),
+                '鐵質': round(random.uniform(0.3, 3), 1),
+                '鈣質': random.randint(10, 150)
+            }
+        }
+        return jsonify(vegetable)
+
+    except Exception as e:
+        app.logger.error(f"Error fetching vegetable detail: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
+
+
+@app.route('/api/recipes/<int:veg_id>', methods=['GET'])
+def get_recipes(veg_id):
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'error': '無法連接資料庫'}), 500
+
+    try:
+        cur = conn.cursor()
+        # 修正：使用 AS 別名讓資料處理更清晰，並確保查詢所有必要欄位
+        cur.execute("""
+            SELECT
+                mr.id AS recipe_id,
+                mr.recipe AS recipe_title,
+                rs.step_no,
+                rs.description
+            FROM main_recipe AS mr
+            JOIN recipe_steps AS rs ON mr.id = rs.recipe_id
+            WHERE mr.vege_id = %s
+            ORDER BY mr.id, rs.step_no;
+        """, (veg_id,))
+        rows = cur.fetchall()
+
+        if not rows:
+            return jsonify({'message': '查無此蔬菜的食譜'}), 200 # 200 表示成功但無資料
+
+        # 使用 defaultdict 處理資料，確保資料結構正確
+        recipes_map = defaultdict(lambda: {
+            'id': None,
+            'title': '',
+            'steps': []
+        })
+
+        for row in rows:
+            # 透過 cursor.description 取得欄位名稱，更安全
+            recipe_id = row[0]
+            if recipes_map[recipe_id]['id'] is None:
+                recipes_map[recipe_id]['id'] = row[0]
+                recipes_map[recipe_id]['title'] = row[1]
+            
+            recipes_map[recipe_id]['steps'].append({
+                'step_no': row[2],
+                'description': row[3]
+            })
+
+        # 將步驟合併為一個單一的字串，並新增預設圖片網址
+        recipes_list = []
+        for recipe_data in recipes_map.values():
+            steps_text = '\n'.join([f"步驟{s['step_no']}. {s['description']}" for s in recipe_data['steps']])
+            recipes_list.append({
+                'id': recipe_data['id'],
+                'title': recipe_data['title'],
+                'instructions': steps_text,
+                'imageUrl': f'https://dummyimage.com/600x400/80c96a/fff&text={recipe_data["title"]}'
+            })
+            
+        return jsonify(recipes_list)
+
+    except Exception as e:
+        # 在錯誤發生時，將錯誤寫入日誌，以便追蹤
+        app.logger.error(f"Error fetching recipes for veg_id {veg_id}: {e}")
+        # 回傳 500 錯誤給前端
+        return jsonify({'error': '伺服器內部錯誤'}), 500
+    finally:
+        if conn:
+            conn.close()
+
 def get_recipes_by_vege_id(vege_id):
     """根據 vege_id 查詢食譜及其步驟"""
     conn = get_db_connection()
@@ -227,7 +378,7 @@ def create_recipe_flex_carousel(recipes_data):
                         style="link",
                         height="sm",
                         action=URIAction(
-                            label="前往網站看得更詳細", uri=f"{web_url}/?id={recipe['id']}"
+                            label="前往網站看得更詳細", uri=f"{web_url}/?section=recipe&id={recipe['id']}"
                         ),
                     ),
                 ],
@@ -348,7 +499,7 @@ def _create_vegetable_flex_message(
                 style="link",
                 height="sm",
                 action=URIAction(
-                    label="前往網站看得更詳細", uri=f"{web_url}/?id={veg_data['id']}"
+                    label="前往網站看得更詳細", uri=f"{web_url}/?section=detail&id={veg_data['id']}"
                 ),
             ) if 'id' in veg_data else None,
         ],
@@ -672,59 +823,6 @@ def handle_prediction():
         print(f"API 處理時發生錯誤: {e}")
         return jsonify({"error": "伺服器內部錯誤，無法辨識圖片"}), 500
 
-
-@app.route('/api/recipes/<int:veg_id>', methods=['GET'])
-def get_recipes(veg_id):
-    conn = get_db_connection()
-    if conn is None:
-        return jsonify({'error': '無法連接資料庫'}), 500
-
-    try:
-        cur = conn.cursor()
-        # 使用 JOIN 語法從 main_recipe 和 recipe_steps 兩個表格中獲取資料
-        # 注意：這裡的欄位名稱已經根據你提供的資訊進行了更新
-        cur.execute("""
-            SELECT
-                mr.id,
-                mr.recipe,
-                mr.vege_id,
-                rs.step_no,
-                rs.description
-            FROM main_recipe AS mr
-            JOIN recipe_steps AS rs ON mr.id = rs.recipe_id
-            WHERE mr.vege_id = %s
-            ORDER BY mr.id, rs.step_no;
-        """, (veg_id,))
-        rows = cur.fetchall()
-
-        if not rows:
-            return jsonify({'message': '查無此蔬菜的食譜'}), 404
-
-        # 將資料處理成一個適合前端使用的 JSON 格式
-        recipes = defaultdict(lambda: {
-            'recipe_id': None,
-            'recipe_name': '',
-            'vege_id': None,
-            'steps': []
-        })
-
-        for row in rows:
-            recipe_id = row[0]
-            recipes[recipe_id]['recipe_id'] = row[0]
-            recipes[recipe_id]['recipe_name'] = row[1]
-            recipes[recipe_id]['vege_id'] = row[2]
-            recipes[recipe_id]['steps'].append({
-                'step_no': row[3],
-                'description': row[4]
-            })
-
-        return jsonify(list(recipes.values()))
-
-    except Exception as e:
-        return jsonify({'error': str(e)}), 500
-    finally:
-        cur.close()
-        conn.close()
 
 
 

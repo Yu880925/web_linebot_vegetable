@@ -16,48 +16,66 @@ const sendMessage = document.getElementById('sendMessage');
 const chatMessages = document.getElementById('chatMessages');
 const uploadBtn = document.getElementById('uploadBtn');
 const imageUpload = document.getElementById('imageUpload');
+const vegetableTagsContainer = document.querySelector('.vegetable-tags-container');
+const recipeGrid = document.getElementById('recipeGrid');
 
 // 初始化
 document.addEventListener('DOMContentLoaded', async function () {
+    setupEventListeners();
     await initializeApp();
 });
 
+async function fetchVegetablesForOverviewAndPrice() {
+    try {
+        const response = await fetch('/api/vegetables');
+        if (!response.ok) throw new Error('無法取得蔬菜資料');
+        vegetables = await response.json(); // 更新全域變數
+        renderVegetables();
+        renderPricePredictions();
+    } catch (error) {
+        console.error('載入蔬菜資料失敗:', error);
+    }
+}
+
 async function initializeApp() {
     try {
-        await Promise.all([
-            loadVegNameMapping(),
-            loadRecipesData()
-        ]);
-        // 所有非同步資料載入完成後才設定事件監聽器和渲染頁面
-        setupEventListeners();
+        await fetchVegetablesForOverviewAndPrice(); // 先抓總覽 & 價格用的資料
+        await fetchVegetableTags(); // 再抓食譜頁標籤
+
+        if (vegetables.length > 0) {
+            const firstVegId = vegetables[0].id;
+            document.querySelector(`.vegetable-tag[data-id="${firstVegId}"]`)?.classList.add('active');
+            await fetchRecipesByVegId(firstVegId);
+        }
         renderPageBasedOnUrl();
     } catch (error) {
         console.error('應用程式初始化失敗:', error);
     }
 }
 
+
+// ... (其他函式如 renderPageBasedOnUrl, showSection, parseCSVLine 等不變)
+
 // 統一的頁面渲染函式，處理初始載入和歷史紀錄變更
+// ...
+// ...
 function renderPageBasedOnUrl() {
     const params = new URLSearchParams(window.location.search);
     const section = params.get('section');
-    const vegId = params.get('id');
+    const id = params.get('id');
 
-    if (vegId) {
-        // 如果網址中有 id 參數，優先顯示詳細頁面
-        if (section === 'recipe') {
-            showRecipeDetail(vegId, false);
-        } else {
-            showVegetableDetail(vegId, false);
-        }
-    } else if (section === 'recipe') {
-        // 如果只有 section=recipe，顯示食譜列表頁
-        showSection('recipe');
-    } else if (section === 'price-prediction') {
-        // 如果只有 section=price-prediction，顯示價格預測頁
-        showSection('price-prediction');
+    if (section === 'detail' && id) {
+        // 新增的邏輯：如果URL是 /?section=detail&id=...，則顯示蔬菜詳細頁
+        showVegetableDetail(id, false);
+    } else if (section === 'recipe' && id) {
+        // 處理食譜詳細頁
+        showRecipeDetail(id, false);
+    } else if (section) {
+        // 處理其他一般頁面（如總覽頁、價格預測頁）
+        showSection(section, false);
     } else {
-        // 沒有任何參數，顯示首頁
-        showSection('overview');
+        // 如果URL沒有任何參數，則預設顯示食譜頁
+        showSection('recipe', false);
     }
 }
 
@@ -66,13 +84,27 @@ window.addEventListener('popstate', (event) => {
     renderPageBasedOnUrl();
 });
 
-function showSection(sectionId) {
-    document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
-    navItems.forEach(n => n.classList.remove('active'));
-    document.getElementById(sectionId).classList.add('active');
-    document.querySelector(`[data-section="${sectionId}"]`)?.classList.add('active');
-    document.getElementById('detailPage')?.remove();
-    window.scrollTo(0, 0); // 新增滾動到頂部
+function showSection(targetId, pushState = true) {
+    contentSections.forEach(section => {
+        section.classList.remove('active');
+    });
+    navItems.forEach(nav => {
+        nav.classList.remove('active');
+    });
+
+    const targetSection = document.getElementById(targetId);
+    if (targetSection) {
+        targetSection.classList.add('active');
+        const correspondingNavItem = document.querySelector(`.nav-item[data-target="${targetId}"]`);
+        if (correspondingNavItem) {
+            correspondingNavItem.classList.add('active');
+        }
+    }
+    if (pushState) {
+        history.pushState({ target: targetId }, '', `/?section=${targetId}`);
+    }
+    if (window.innerWidth <= 768) sidebar.classList.remove('active');
+    window.scrollTo(0, 0);
 }
 
 // 讀取蔬菜名稱對照表 (修改為 Promise 函式)
@@ -106,28 +138,21 @@ async function loadVegNameMapping() {
         generateVegetablesData();
     }
 }
-// 讀取食譜資料 (修改為 Promise 函式)
-async function loadRecipesData() {
-    try {
-        const response = await fetch('/api/csv/大白菜_清理後食譜.csv');
-        const csvText = await response.text();
-        recipes = csvText.split('\n').slice(1).map((line, index) => {
-            if (!line.trim()) return null;
-            const columns = parseCSVLine(line);
-            if (columns.length < 7) return null;
-            const [id, name, url, preview_ingredients, ingredients, steps] = columns;
-            return {
-                id: parseInt(id) || (index + 1000), name,
-                image: `https://source.unsplash.com/400x300/?food,dish,${parseInt(id)}`,
-                ingredients: ingredients.split('|').map(item => ({ name: item.trim().split(' ')[0], amount: item.trim().split(' ').slice(1).join(' ') || '適量' })),
-                description: preview_ingredients.substring(0, 80) + '...', // 增加描述長度
-                cookTime: '30分鐘', difficulty: '簡單', servings: '2-3人份',
-                steps: steps.split('|').map((step, stepIndex) => ({ step: stepIndex + 1, description: step.trim(), image: `https://source.unsplash.com/400x300/?cooking,step,${parseInt(id) + stepIndex}` })),
-            };
-        }).filter(Boolean);
-        renderRecipes();
-    } catch (error) {
-        console.error('載入食譜資料失敗:', error);
+
+
+// 新增函式：根據 pageId 顯示對應的內容區塊
+function showPage(pageId) {
+    // 隱藏所有內容區塊
+    contentSections.forEach(section => section.classList.remove('active'));
+
+    // 顯示指定 id 的內容區塊
+    const targetPage = document.getElementById(pageId);
+    if (targetPage) {
+        targetPage.classList.add('active');
+        // 如果是食譜頁面，重新載入蔬菜標籤和食譜
+        if (pageId === 'recipe-page') {
+            initializeApp();
+        }
     }
 }
 
@@ -263,131 +288,224 @@ function renderRadarChart(canvas, labels, data, label) {
     });
 }
 
+
+// ... (其他函式如 renderPageBasedOnUrl, showSection, parseCSVLine 等不變)
 // 渲染食譜卡片
 function renderRecipes() {
-    const grid = document.getElementById('recipeGrid');
-    if (!grid) return;
-    grid.innerHTML = recipes.map(recipe => `
-        <div class="recipe-card" onclick="showRecipeDetail(${recipe.id}, true)" data-name="${recipe.name.toLowerCase()}" data-ingredients="${recipe.ingredients.map(i => i.name).join(',').toLowerCase()}">
-            <img src="/api/image/${recipe.name}.jpg" alt="${recipe.name}" loading="lazy">
+    if (!recipeGrid) return;
+    if (recipes.length === 0) {
+        recipeGrid.innerHTML = `<p>查無此蔬菜的食譜</p>`;
+        return;
+    }
+    recipeGrid.innerHTML = recipes.map(recipe => `
+        <div class="recipe-card" onclick="showRecipeDetail(${recipe.id}, true)" data-name="${recipe.title.toLowerCase()}">
+            <img src="${recipe.imageUrl}" alt="${recipe.title}" loading="lazy">
             <div class="card-content">
-                <h3>${recipe.name}</h3>
-                <p>${recipe.description}</p>
+                <h3>${recipe.title}</h3>
+                <p>${recipe.instructions.substring(0, 80) + '...'}</p>
                 <div class="recipe-meta">
-                    <span><i class="fas fa-clock"></i> ${recipe.cookTime}</span>
-                    <span><i class="fas fa-signal"></i> ${recipe.difficulty}</span>
+                    <span><i class="fas fa-clock"></i> 30分鐘</span>
+                    <span><i class="fas fa-signal"></i> 簡單</span>
                 </div>
             </div>
         </div>`).join('');
 }
 
-// 顯示蔬菜詳細頁面
-function showVegetableDetail(id, pushState = true) {
-    const vegetable = vegetables.find(v => v.id == id);
-    if (!vegetable) return;
+// 讀取蔬菜標籤
+async function fetchVegetableTags() {
+    try {
+        const response = await fetch('/api/vegetables');
+        if (!response.ok) throw new Error('無法取得蔬菜列表');
+        vegetables = await response.json();
 
+        vegetableTagsContainer.innerHTML = vegetables.map(veg =>
+            `<div class="vegetable-tag" data-id="${veg.id}">${veg.name}</div>`
+        ).join('');
+
+        document.querySelectorAll('.vegetable-tag').forEach(tag => {
+            tag.addEventListener('click', async function () {
+                document.querySelectorAll('.vegetable-tag').forEach(t => t.classList.remove('active'));
+                this.classList.add('active');
+                const vegId = this.getAttribute('data-id');
+                await fetchRecipesByVegId(vegId);
+            });
+        });
+
+    } catch (error) {
+        console.error('載入蔬菜標籤失敗:', error);
+    }
+}
+
+async function fetchRecipesByVegId(vegId) {
+    try {
+        const response = await fetch(`/api/recipes/${vegId}`);
+        if (response.status === 404) {
+            recipes = [];
+            if (recipeGrid) recipeGrid.innerHTML = `<p>查無此蔬菜的食譜</p>`;
+            return;
+        }
+        if (!response.ok) throw new Error('無法取得食譜列表');
+        recipes = await response.json();
+        renderRecipes();
+    } catch (error) {
+        console.error('載入食譜資料失敗:', error);
+    }
+}
+
+
+// 顯示蔬菜詳細頁面
+// 修改 showVegetableDetail 函式以使用後端 API
+async function showVegetableDetail(id, pushState = true) {
     if (pushState) {
-        history.pushState({ type: 'vegetable', id: id }, '', `/?id=${id}`);
+        history.pushState({ type: 'vegetable', id: id, section: 'detail' }, '', `/?section=detail&id=${id}`);
     }
 
     document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
     navItems.forEach(n => n.classList.remove('active'));
 
+    const mainContent = document.querySelector('.main-content');
     document.getElementById('detailPage')?.remove();
 
     let detailSection = document.createElement('section');
     detailSection.id = 'detailPage';
     detailSection.className = 'content-section active';
-    document.querySelector('.main-content').appendChild(detailSection);
-
-    const relatedRecipes = recipes.filter(r => r.ingredients.some(i => i.name.includes(vegetable.name) || vegetable.name.includes(i.name))).slice(0, 3);
-
     detailSection.innerHTML = `
-        <div class="detail-container">
-            <div class="back-button-container">
+        <div class="loading-spinner">
+            <i class="fas fa-spinner fa-spin"></i> 載入中...
+        </div>
+    `;
+    mainContent.appendChild(detailSection);
+
+    try {
+        // 從後端 API 獲取蔬菜詳細資訊
+        const vegResponse = await fetch(`/api/vegetables/${id}`); // 假設你新增了這個 API
+        if (!vegResponse.ok) throw new Error('Failed to fetch vegetable data');
+        const vegetable = await vegResponse.json();
+
+        // 從後端 API 獲取相關食譜
+        const recipeResponse = await fetch(`/api/recipes/${id}`);
+        if (!recipeResponse.ok) throw new Error('Failed to fetch recipes');
+        const relatedRecipes = await recipeResponse.json();
+
+        // 檢查是否成功獲取資料
+        if (!vegetable) {
+            detailSection.innerHTML = `
+                <div class="detail-container">
+                    <p>找不到此蔬菜的詳細資訊。</p>
+                    <button class="btn btn-primary" onclick="goBackToOverview()"><i class="fas fa-arrow-left"></i> 返回蔬菜總覽</button>
+                </div>
+            `;
+            return;
+        }
+
+        // 動態生成 HTML
+        detailSection.innerHTML = `
+            <div class="detail-container">
+                <div class="back-button-container">
+                    <button class="btn btn-primary" onclick="goBackToOverview()"><i class="fas fa-arrow-left"></i> 返回蔬菜總覽</button>
+                </div>
+                <header class="detail-header">
+                    <img src="${vegetable.imageUrl}" alt="${vegetable.name}" class="detail-header-image">
+                    <div class="detail-header-info">
+                        <h1>${vegetable.name}</h1>
+                        <p class="description">${vegetable.description || '無描述'}</p>
+                        <div class="tags">
+                            <span class="tag">${vegetable.season || '全年'}盛產</span>
+                            <span class="tag price-change-tag ${vegetable.priceChange && vegetable.priceChange.includes('+') ? 'increase' : 'decrease'}">
+                                ${vegetable.priceChange || 'N/A'}
+                            </span>
+                        </div>
+                        <div class="current-price">目前價格：NT$ ${vegetable.currentPrice || 'N/A'} / 斤</div>
+                    </div>
+                </header>
+                
+                <div class="charts-container">
+                    <div class="chart-card">
+                        <h3><i class="fas fa-chart-line"></i> 價格趨勢</h3>
+                        <div class="time-select">
+                           <button onclick="updatePriceChart(event, 'detail-priceChart', ${vegetable.id}, 7, this)">近7天</button>
+                           <button onclick="updatePriceChart(event, 'detail-priceChart', ${vegetable.id}, 14, this)">近14天</button>
+                           <button class="active" onclick="updatePriceChart(event, 'detail-priceChart', ${vegetable.id}, 30, this)">近30天</button>
+                        </div>
+                        <div class="chart-wrapper"><canvas id="detail-priceChart"></canvas></div>
+                    </div>
+                    <div class="chart-card">
+                        <h3><i class="fas fa-chart-pie"></i> 營養佔比</h3>
+                        <div class="chart-wrapper"><canvas id="detail-nutritionChart"></canvas></div>
+                    </div>
+                </div>
+
+                <section class="detail-section">
+                    <h3><i class="fas fa-balance-scale"></i> 營養價值 (每100g)</h3>
+                    <div class="nutrition-grid">
+                        ${Object.entries(vegetable.nutrition || {}).map(([key, val]) => `
+                            <div class="nutrition-item">
+                                <div class="value">${val}${getUnit(key)}</div>
+                                <small>${key}</small>
+                            </div>
+                        `).join('')}
+                    </div>
+                </section>
+                
+                <section class="detail-section related-recipes">
+                    <h3><i class="fas fa-utensils"></i> 相關食譜推薦</h3>
+                    ${relatedRecipes && relatedRecipes.length > 0 ? `
+                        <div class="recipes-grid">
+                            ${relatedRecipes.slice(0, 5).map(recipe => `
+                                <div class="recipe-card" onclick="window.location.href='/?section=recipe&id=${recipe.id}'">
+                                    <img src="${recipe.imageUrl}" alt="${recipe.title}" loading="lazy">
+                                    <div class="card-content">
+                                        <h4>${recipe.title}</h4>
+                                        <p><strong>食譜說明：</strong>${recipe.instructions.split('\\n')[0]}...</p>
+                                    </div>
+                                </div>`).join('')}
+                        </div>` :
+                `<p>暫無相關食譜</p>`}                  
+                </section>
+            </div>
+        `;
+
+        // 渲染圖表
+        setTimeout(() => {
+            updatePriceChart(null, `detail-priceChart`, vegetable.id, 30);
+            const nutritionCanvas = document.getElementById(`detail-nutritionChart`);
+            if (nutritionCanvas && vegetable.nutrition) {
+                const nut = vegetable.nutrition;
+                const labels = Object.keys(nut);
+                const data = Object.values(nut).map((value, index) => {
+                    // 這裡的邏輯需要與後端資料結構對齊，先用一個簡化版
+                    const maxValues = { '熱量': 500, '蛋白質': 50, '纖維': 10, '維生素C': 150 };
+                    return (value / (maxValues[labels[index]] || 100)) * 100;
+                });
+                renderRadarChart(nutritionCanvas, labels, data, '營養價值(%)');
+            }
+        }, 100);
+
+        if (window.innerWidth <= 768) sidebar.classList.remove('active');
+        window.scrollTo(0, 0);
+
+    } catch (error) {
+        console.error('Error fetching vegetable details:', error);
+        detailSection.innerHTML = `
+            <div class="detail-container">
+                <p>載入詳細資訊時發生錯誤。請稍後再試。</p>
                 <button class="btn btn-primary" onclick="goBackToOverview()"><i class="fas fa-arrow-left"></i> 返回蔬菜總覽</button>
             </div>
-            <header class="detail-header">
-                <img src="/api/image/${vegetable.name}.jpg" alt="${vegetable.name}" class="detail-header-image">
-                <div class="detail-header-info">
-                    <h1>${vegetable.name}</h1>
-                    <p class="description">${vegetable.description}</p>
-                    <div class="tags">
-                        <span class="tag">${vegetable.season}盛產</span>
-                        <span class="tag price-change-tag ${vegetable.priceChange.includes('+') ? 'increase' : 'decrease'}">
-                            ${vegetable.priceChange}
-                        </span>
-                    </div>
-                    <div class="current-price">目前價格：NT$ ${vegetable.currentPrice} / 斤</div>
-                </div>
-            </header>
-            
-            <div class="charts-container">
-                <div class="chart-card">
-                    <h3><i class="fas fa-chart-line"></i> 價格趨勢</h3>
-                    <div class="time-select">
-                       <button onclick="updatePriceChart(event, 'detail-priceChart', ${vegetable.id}, 7, this)">近7天</button>
-                       <button onclick="updatePriceChart(event, 'detail-priceChart', ${vegetable.id}, 14, this)">近14天</button>
-                       <button class="active" onclick="updatePriceChart(event, 'detail-priceChart', ${vegetable.id}, 30, this)">近30天</button>
-                    </div>
-                    <div class="chart-wrapper"><canvas id="detail-priceChart"></canvas></div>
-                </div>
-                <div class="chart-card">
-                    <h3><i class="fas fa-chart-pie"></i> 營養佔比</h3>
-                    <div class="chart-wrapper"><canvas id="detail-nutritionChart"></canvas></div>
-                </div>
-            </div>
-
-            <section class="detail-section">
-                <h3><i class="fas fa-balance-scale"></i> 營養價值 (每100g)</h3>
-                <div class="nutrition-grid">
-                    ${Object.entries(vegetable.nutrition).map(([key, val]) => `
-                        <div class="nutrition-item">
-                            <div class="value">${val}${key === '纖維' ? 'g' : (key === '熱量' ? '卡' : (key.includes('維生素') ? 'μg' : 'mg'))}</div>
-                            <small>${key}</small>
-                        </div>
-                    `).join('')}
-                </div>
-            </section>
-            
-            <section class="detail-section related-recipes">
-                <h3><i class="fas fa-utensils"></i> 相關食譜推薦</h3>
-                ${relatedRecipes.length > 0 ? `
-                    <div class="recipes-grid">
-                        ${relatedRecipes.map(recipe => `
-                            <div class="recipe-card" onclick="showRecipeDetail(${recipe.id}, true)">
-                                <img src="/api/image/${recipe.name}.jpg" alt="${recipe.name}" loading="lazy">
-                                <div class="card-content">
-                                    <h4>${recipe.name}</h4>
-                                    <p><strong>主要食材：</strong>${recipe.ingredients.slice(0, 3).map(ing => ing.name).join('、')}</p>
-                                    <div class="recipe-meta">
-                                        <span><i class="fas fa-clock"></i> ${recipe.cookTime}</span>
-                                        <span><i class="fas fa-signal"></i> ${recipe.difficulty}</span>
-                                    </div>
-                                </div>
-                            </div>`).join('')}
-                    </div>` :
-            `<p>暫無相關 ${vegetable.name} 食譜</p>`
-        }
-            </section>
-        </div>`;
-
-    setTimeout(() => {
-        updatePriceChart(null, `detail-priceChart`, vegetable.id, 30);
-        const nutritionCanvas = document.getElementById(`detail-nutritionChart`);
-        if (nutritionCanvas) {
-            const nut = vegetable.nutrition;
-            const labels = Object.keys(nut);
-            const data = Object.values(nut).map((value, index) => {
-                const maxValues = [50, 5, 100, 500, 3, 150];
-                return (value / maxValues[index]) * 100;
-            });
-            renderRadarChart(nutritionCanvas, labels, data, '營養價值(%)');
-        }
-    }, 100);
-    if (window.innerWidth <= 768) sidebar.classList.remove('active');
-    window.scrollTo(0, 0); // 新增滾動到頂部
+        `;
+    }
 }
+
+// 輔助函式，根據營養成分名稱回傳單位
+function getUnit(key) {
+    if (key.includes('熱量')) return '卡';
+    if (key.includes('g') || key.includes('克') || key.includes('蛋白質') || key.includes('纖維')) return 'g';
+    if (key.includes('微克')) return 'μg';
+    return 'mg';
+}
+
+// 注意：這段程式碼依賴於後端新增一個 `/api/vegetables/<int:id>` 的 API 端點，
+// 該端點應回傳單一蔬菜的所有詳細資訊，包括價格、季節和營養資料。
+// 如果沒有這個 API，前端將無法取得資料。
 
 // 顯示食譜詳細頁面
 function showRecipeDetail(id, pushState = true) {
@@ -399,8 +517,6 @@ function showRecipeDetail(id, pushState = true) {
     }
 
     document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
-    navItems.forEach(n => n.classList.remove('active'));
-
     document.getElementById('detailPage')?.remove();
 
     let detailSection = document.createElement('section');
@@ -408,81 +524,37 @@ function showRecipeDetail(id, pushState = true) {
     detailSection.className = 'content-section active';
     document.querySelector('.main-content').appendChild(detailSection);
 
-    const relatedRecipes = recipes.filter(r => r.id !== recipe.id && r.ingredients.some(ing => recipe.ingredients.some(rIng => ing.name.includes(rIng.name) || rIng.name.includes(ing.name)))).slice(0, 3);
-
     detailSection.innerHTML = `
         <div class="detail-container">
             <div class="back-button-container">
                 <button class="btn btn-primary" onclick="goBackToRecipes()"><i class="fas fa-arrow-left"></i> 返回食譜列表</button>
             </div>
             <header class="detail-header recipe-header">
-                <img src="/api/image/${recipe.name}.jpg" alt="${recipe.name}" class="detail-header-image">
+                <img src="${recipe.imageUrl}" alt="${recipe.title}" class="detail-header-image">
                 <div class="detail-header-info">
-                    <h1>${recipe.name}</h1>
-                    <p class="description">${recipe.description}</p>
+                    <h1>${recipe.title}</h1>
                     <div class="recipe-header-meta">
-                        <div class="meta-item"><i class="fas fa-clock"></i><span>${recipe.cookTime}</span></div>
-                        <div class="meta-item"><i class="fas fa-signal"></i><span>${recipe.difficulty}</span></div>
-                        <div class="meta-item"><i class="fas fa-users"></i><span>${recipe.servings}</span></div>
+                        <div class="meta-item"><i class="fas fa-clock"></i><span>30分鐘</span></div>
+                        <div class="meta-item"><i class="fas fa-signal"></i><span>簡單</span></div>
+                        <div class="meta-item"><i class="fas fa-users"></i><span>2-3人份</span></div>
                     </div>
                 </div>
             </header>
 
             <section class="detail-section">
-                <h3><i class="fas fa-list-ul"></i> 所需食材</h3>
-                <div class="ingredients-grid">
-                    ${recipe.ingredients.map(ing => `
-                        <div class="ingredient-item">
-                            <span class="name">${ing.name}</span>
-                            <span class="amount">${ing.amount}</span>
-                        </div>
-                    `).join('')}
-                </div>
-            </section>
-            
-            <section class="detail-section">
                 <h3><i class="fas fa-shoe-prints"></i> 烹飪步驟</h3>
                 <div class="steps-container">
-                    ${recipe.steps.map(step => `
-                        <div class="step-item">
-                            <div class="step-number">${step.step}</div>
-                            <div class="step-content">
-                                <img src="/api/image/${step.image}" alt="步驟 ${step.step}" class="step-image">
-                                <p class="description">${step.description}</p>
-                            </div>
+                    <div class="step-item">
+                        <div class="step-content">
+                            <p class="description">${recipe.instructions.replace(/\n/g, '<br>')}</p>
                         </div>
-                    `).join('')}
+                    </div>
                 </div>
             </section>
-
-            <section class="detail-section">
-                <h3><i class="fas fa-lightbulb"></i> 烹飪小貼士</h3>
-                <p>• 選用新鮮食材，確保最佳口感和營養價值。</p>
-                <p>• 調味料可依個人喜好調整，建議先少後多。</p>
-                <p>• 注意火候控制，避免過度烹煮影響口感。</p>
-            </section>
-            
-            ${relatedRecipes.length > 0 ? `
-            <section class="detail-section related-recipes">
-                <h3><i class="fas fa-thumbs-up"></i> 更多推薦</h3>
-                <div class="recipes-grid">
-                    ${relatedRecipes.map(r => `
-                        <div class="recipe-card" onclick="showRecipeDetail(${r.id}, true)">
-                            <img src="/api/image/${r.name}.jpg" alt="${r.name}" loading="lazy">
-                            <div class="card-content">
-                                <h4>${r.name}</h4>
-                                <p><strong>主要食材：</strong>${r.ingredients.slice(0, 3).map(i => i.name).join('、')}</p>
-                                <div class="recipe-meta">
-                                    <span><i class="fas fa-clock"></i> ${r.cookTime}</span>
-                                    <span><i class="fas fa-signal"></i> ${r.difficulty}</span>
-                                </div>
-                            </div>
-                        </div>`).join('')}
-                </div>
-            </section>` : ''}
         </div>`;
+
     if (window.innerWidth <= 768) sidebar.classList.remove('active');
-    window.scrollTo(0, 0); // 新增滾動到頂部
+    window.scrollTo(0, 0);
 }
 
 // 返回函式
@@ -492,63 +564,83 @@ function goBackToOverview() {
 }
 
 function goBackToRecipes() {
-    history.pushState({ page: 'recipe' }, '', '/?section=recipe');
-    showSection('recipe');
+    const recipeSection = document.getElementById('recipe');
+    if (recipeSection) {
+        document.getElementById('detailPage')?.remove();
+        showSection('recipe');
+    }
 }
+
+function handleChatInput() {
+    const message = chatInput.value.trim();
+    if (message) {
+        appendMessage('user', message);
+        chatInput.value = '';
+    }
+}
+
+function appendMessage(sender, message) {
+    const messageElement = document.createElement('div');
+    messageElement.classList.add('chat-message', sender);
+    messageElement.innerHTML = `<p>${message}</p>`;
+    chatMessages.appendChild(messageElement);
+    chatMessages.scrollTop = chatMessages.scrollHeight;
+}
+
 
 // 統一設置所有事件監聽器
 function setupEventListeners() {
-    menuToggle.addEventListener('click', () => sidebar.classList.toggle('active'));
+    menuToggle.addEventListener('click', () => {
+        sidebar.classList.toggle('active');
+    });
+
     navItems.forEach(item => {
-        item.addEventListener('click', function (e) {
-            e.preventDefault();
-            const targetSectionId = this.getAttribute('data-section');
-            let newUrl = '/';
-            if (targetSectionId === 'recipe') {
-                newUrl = '/?section=recipe';
-            } else if (targetSectionId === 'price-prediction') {
-                newUrl = '/?section=price-prediction';
+        item.addEventListener('click', function (event) {
+            event.preventDefault();
+            const targetId = this.getAttribute('data-section');
+            if (targetId) {
+                showSection(targetId);
             }
-            history.pushState({ page: targetSectionId }, '', newUrl);
-
-            showSection(targetSectionId);
-            if (window.innerWidth <= 768) sidebar.classList.remove('active');
         });
     });
-    chatToggle.addEventListener('click', (e) => {
-        e.preventDefault();
+
+    chatToggle.addEventListener('click', () => {
         chatBody.classList.toggle('active');
-        chatToggle.querySelector('i').classList.toggle('fa-angle-up');
-        chatToggle.querySelector('i').classList.toggle('fa-angle-down');
+        if (chatBody.classList.contains('active')) {
+            chatInput.focus();
+        }
     });
-    sendMessage.addEventListener('click', sendChatMessage);
-    chatInput.addEventListener('keypress', e => e.key === 'Enter' && sendChatMessage());
-    // 新增的事件監聽(上傳圖片)
-    uploadBtn.addEventListener('click', () => imageUpload.click());
-    imageUpload.addEventListener('change', handleImageUpload);
 
-    // 搜尋功能
-    document.getElementById('vegetableSearch').addEventListener('input', e => {
-        const term = e.target.value.toLowerCase();
-        document.querySelectorAll('#vegetableGrid .vegetable-card').forEach(card => {
-            card.style.display = card.dataset.name.includes(term) ? 'flex' : 'none';
-        });
+    sendMessage.addEventListener('click', () => {
+        handleChatInput();
     });
-    document.getElementById('recipeSearch').addEventListener('input', e => {
+
+    chatInput.addEventListener('keypress', (e) => {
+        if (e.key === 'Enter') {
+            handleChatInput();
+        }
+    });
+
+    document.getElementById('recipeSearch')?.addEventListener('input', e => {
         const term = e.target.value.toLowerCase();
         document.querySelectorAll('#recipeGrid .recipe-card').forEach(card => {
             const nameMatch = card.dataset.name.includes(term);
-            const ingredientMatch = card.dataset.ingredients.includes(term);
-            card.style.display = (nameMatch || ingredientMatch) ? 'flex' : 'none';
+            card.style.display = nameMatch ? 'flex' : 'none';
         });
     });
-    document.getElementById('priceSearch').addEventListener('input', e => {
-        const term = e.target.value.toLowerCase();
-        document.querySelectorAll('#priceResults .price-card').forEach(card => {
-            card.style.display = card.dataset.name.includes(term) ? 'flex' : 'none';
-        });
+
+    window.addEventListener('popstate', (event) => {
+        if (event.state) {
+            if (event.state.type === 'recipe') {
+                showRecipeDetail(event.state.id, false);
+            } else {
+                showSection(event.state.target, false);
+            }
+        }
     });
 }
+
+
 
 // 修改後的圖片上傳處理函式
 async function handleImageUpload(event) {
