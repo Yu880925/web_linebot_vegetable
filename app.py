@@ -951,7 +951,7 @@ def handle_text_message(event):
         reply_message = None
         text = event.message.text.strip()
 
-        if text == "上傳圖片":
+        if text == "辨識蔬菜":
             reply_message = TextMessage(
                 text="請選擇拍照或從相簿選擇圖片(請盡量讓背景單純)：",
                 quick_reply=QuickReply(
@@ -961,9 +961,9 @@ def handle_text_message(event):
                     ]
                 ),
             )
-        elif text == "輸入營養成分":
+        elif text == "食譜推薦":
             reply_message = TextMessage(
-                text="請輸入您想查詢的營養成分，例如：蛋白質、維生素C、鐵質\n您也可以輸入蔬菜名稱或別名，例如：高麗菜、大白菜"
+                text="請輸入您想用甚麼食材，來份佳餚呢"
             )
         else:
             nutrient_input = text

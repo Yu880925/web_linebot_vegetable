@@ -51,15 +51,15 @@ def create_and_upload_rich_menu():
                 areas=[
                     RichMenuArea(
                         bounds=RichMenuBounds(x=0, y=0, width=833, height=843),
-                        action=MessageAction(text="上傳圖片")
+                        action=MessageAction(text="辨識蔬菜")
                     ),
                     RichMenuArea(
                         bounds=RichMenuBounds(x=833, y=0, width=833, height=843),
-                        action=MessageAction(text="輸入營養成分")
+                        action=MessageAction(text="食譜推薦")
                     ),
                     RichMenuArea(
                         bounds=RichMenuBounds(x=1666, y=0, width=834, height=843),
-                        action=MessageAction(text="輸入現有食材")
+                        action=MessageAction(text="當季蔬菜")
                     )
                 ]
             )
