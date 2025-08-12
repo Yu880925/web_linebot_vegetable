@@ -68,7 +68,7 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
             SELECT vege_id, {actual_nutrient_column}, *
             FROM vege_nutrition
             ORDER BY {actual_nutrient_column} DESC
-            LIMIT 5;
+            LIMIT 3;
         """
         cursor.execute(query_nutrition)
         nutrition_rows = cursor.fetchall()

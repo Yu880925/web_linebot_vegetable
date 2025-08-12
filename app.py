@@ -153,7 +153,7 @@ def get_vegetables():
                 'season': random.choice(['春季', '夏季', '秋季', '冬季', '全年']),
                 'priceChange': price_change,
                 'currentPrice': current_price,
-                'image': f"{os.getenv('url_9000')}/veg-data-bucket/images/{veg_name}.jpg",
+                'image': f"/api/image/{veg_name}.jpg",
                 'priceHistory': price_history,
                 'nutrition': {
                     '熱量': random.randint(15, 50),
@@ -207,8 +207,8 @@ def get_vegetable_detail(veg_id):
             'season': random.choice(['春季', '夏季', '秋季', '冬季', '全年']),
             'priceChange': price_change,
             'currentPrice': current_price,
-            'image': f"{os.getenv('url_9000')}/veg-data-bucket/images/{veg_name}.jpg",
-            'imageUrl': f"{os.getenv('url_9000')}/veg-data-bucket/images/{veg_name}.jpg",
+            'image': f"/api/image/{veg_name}.jpg",
+            'imageUrl': f"/api/image/{veg_name}.jpg",
             'priceHistory': price_history,
             'nutrition': {
                 '熱量': random.randint(15, 50),
@@ -304,6 +304,9 @@ def get_recipes_by_vege_id(vege_id):
         return []
     
     recipes_data = []
+
+    # 取得 MinIO 相關環境變數
+    minio_bucket = os.getenv("MINIO_BUCKET_NAME", "veg-data-bucket")
     try:
         cur = conn.cursor()
         
@@ -311,14 +314,16 @@ def get_recipes_by_vege_id(vege_id):
         cur.execute("SELECT id, recipe FROM main_recipe WHERE vege_id = %s LIMIT 10", (vege_id,))
         main_recipes = cur.fetchall()
         
-        # 定義一個預設圖片網址
-        default_image_url = "https://i.imgur.com/your-default-image.png"
         
         for recipe_id, recipe_name in main_recipes:
             # 2. 針對每個食譜，查詢 recipe_steps
             cur.execute("SELECT description FROM recipe_steps WHERE recipe_id = %s ORDER BY step_no ASC", (recipe_id,))
             all_steps = cur.fetchall()
             
+            flex_image_url = os.getenv("url_9000")
+            # 根據食譜 ID 產生 MinIO 圖片 URL
+            image_url = f"{flex_image_url}/{minio_bucket}/images/{recipe_id}.jpg"
+
             steps_list = [step[0] for step in all_steps]
             
             recipe_description = steps_list[0] if steps_list else ""
@@ -327,7 +332,7 @@ def get_recipes_by_vege_id(vege_id):
                 "id": recipe_id,
                 "name": recipe_name,
                 "description": recipe_description,
-                "image_url": default_image_url, # 使用預設圖片網址
+                "image_url": image_url, # 使用預設圖片網址
                 "steps": steps_list
             })
             
@@ -777,6 +782,7 @@ def get_image(filename):
         obj = s3.get_object(Bucket=bucket, Key=key)
         return Response(obj["Body"].read(), mimetype="image/jpeg")
     except Exception as e:
+        app.logger.error(f"MinIO 取檔失敗: bucket={bucket} key={key} error={e}", exc_info=True)
         return "Not found", 404
 
 @app.route("/api/csv/<filename>")
