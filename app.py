@@ -19,6 +19,7 @@ from nutri_rec.nutri_rec import (
 )
 import io
 import boto3
+from botocore.exceptions import NoCredentialsError, ClientError
 from linebot.v3.messaging.models import (
     CameraAction,
     CameraRollAction,
@@ -35,6 +36,9 @@ from linebot.v3.messaging.models import (
     QuickReplyItem,
     ReplyMessageRequest,
     TextMessage,
+    TemplateMessage,
+    ImageCarouselTemplate,
+    ImageCarouselColumn,
     URIAction,
     PostbackAction,
 )
@@ -119,6 +123,74 @@ def get_db_connection():
     except Exception as e:
         app.logger.error(f"Database connection failed: {e}")
         return None
+
+# MinIO 客戶端設定
+def get_minio_client():
+    """建立並回傳 MinIO 客戶端"""
+    try:
+        minio_client = boto3.client(
+            "s3",
+            endpoint_url=os.getenv("url_9000"),
+            aws_access_key_id=os.getenv("MINIO_ROOT_USER"),
+            aws_secret_access_key=os.getenv("MINIO_ROOT_PASSWORD"),
+        )
+        return minio_client
+    except Exception as e:
+        app.logger.error(f"Error creating MinIO client: {e}")
+        return None
+
+
+# @app.route("/api/image/<filename>")
+# def get_image(filename):
+#     # ... (MinIO 函式不變)
+#     s3 = boto3.client(
+#         "s3",
+#         endpoint_url=os.getenv("MINIO_ENDPOINT"),
+#         aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
+#         aws_secret_access_key=os.getenv("MINIO_SECRET_KEY"),
+#         config=boto3.session.Config(signature_version="s3v4"),
+#     )
+#     bucket = os.getenv("MINIO_BUCKET_NAME", "veg-data-bucket")
+#     key = f"images/{filename}"
+#     try:
+#         obj = s3.get_object(Bucket=bucket, Key=key)
+#         return Response(obj["Body"].read(), mimetype="image/jpeg")
+#     except Exception as e:
+#         app.logger.error(f"MinIO 取檔失敗: bucket={bucket} key={key} error={e}", exc_info=True)
+#         return "Not found", 404
+
+@app.route("/api/image/<image_name>", methods=["GET"])
+def get_image(image_name):
+    minio_client = get_minio_client()
+    if minio_client is None:
+        return "Internal Server Error", 500
+
+    minio_bucket = os.getenv("MINIO_BUCKET_NAME", "veg-data-bucket")
+    object_name = f"images/{image_name}"
+
+    try:
+        # 從 MinIO 獲取圖片物件
+        response = minio_client.get_object(Bucket=minio_bucket, Key=object_name)
+        image_data = response['Body'].read()
+
+        # 根據圖片名稱判斷 Content-Type
+        if image_name.lower().endswith(('.jpg', '.jpeg')):
+            content_type = 'image/jpeg'
+        elif image_name.lower().endswith('.png'):
+            content_type = 'image/png'
+        else:
+            content_type = 'application/octet-stream'
+
+        return Response(image_data, mimetype=content_type)
+    except ClientError as e:
+        if e.response['Error']['Code'] == 'NoSuchKey':
+            app.logger.error(f"Image not found in MinIO: {object_name}")
+            return "Image not found", 404
+        app.logger.error(f"Error getting image from MinIO: {e}")
+        return "Internal Server Error", 500
+    except Exception as e:
+        app.logger.error(f"Unexpected error: {e}")
+        return "Internal Server Error", 500
 
 # 新增 API 端點來獲取所有蔬菜清單
 # ... (其他程式碼不變)
@@ -280,9 +352,9 @@ def get_recipes(veg_id):
         minio_bucket = os.getenv("MINIO_BUCKET_NAME", "veg-data-bucket")
         flex_image_url = os.getenv("url_9000")
         # 根據食譜 ID 產生 MinIO 圖片 URL
-        image_url = f"{flex_image_url}/{minio_bucket}/images/{recipe_id}.jpg"
         for recipe_data in recipes_map.values():
             steps_text = '\n'.join([f"步驟{s['step_no']}. {s['description']}" for s in recipe_data['steps']])
+            image_url = f"/api/image/{recipe_data['id']}.jpg"
             recipes_list.append({
                 'id': recipe_data['id'],
                 'title': recipe_data['title'],
@@ -314,7 +386,7 @@ def get_recipes_by_vege_id(vege_id):
         cur = conn.cursor()
         
         # 1. 查詢 main_recipe 資料表
-        cur.execute("SELECT id, recipe FROM main_recipe WHERE vege_id = %s LIMIT 10", (vege_id,))
+        cur.execute("SELECT id, recipe FROM main_recipe WHERE vege_id::integer = %s LIMIT 5", (vege_id,))
         main_recipes = cur.fetchall()
         
         
@@ -367,7 +439,7 @@ def get_recipe_detail(recipe_id):
                 rs.description
             FROM main_recipe AS mr
             JOIN recipe_steps AS rs ON mr.id = rs.recipe_id
-            WHERE mr.id = %s
+            WHERE mr.id::integer = %s
             ORDER BY rs.step_no;
         """, (recipe_id,))
         rows = cur.fetchall()
@@ -448,7 +520,7 @@ def create_recipe_flex_carousel(recipes_data):
 
 
 def _create_vegetable_flex_message(
-    veg_data_list, alt_text_prefix, is_nutrient_search=False
+    veg_data_list, alt_text_prefix, is_nutrient_search=False, confidence=None
 ):
     bubbles = []
     for veg_data in veg_data_list:
@@ -518,6 +590,27 @@ def _create_vegetable_flex_message(
                     margin="md",
                 ),
             )
+        # ⭐ 新增：如果提供了信心度，就將其加入卡片內容
+        if confidence is not None:
+            bubble_body_contents.insert(
+                1, # 插在菜名後面
+                FlexText(
+                    text=f"預測信心指數：{confidence*100:.1f}%",
+                    size="md",
+                    color="#1E90FF", # 使用不同顏色突顯
+                    weight="bold",
+                    margin="md"
+                )
+            )
+
+        # 加入營養資訊
+        bubble_body_contents.append(FlexText(
+            text=all_nutrients_text,
+            size="sm",
+            color="#555555",
+            wrap=True,
+            margin="md",
+        ))
 
         import urllib.parse
         flex_image_url = os.getenv("url_9000")
@@ -527,19 +620,44 @@ def _create_vegetable_flex_message(
         image_url = f"{flex_image_url}/veg-data-bucket/images/{image_filename}"
 
         footer_buttons = []
-        if 'id' in veg_data:
-            # 將蔬菜名稱編碼以安全地放在 URL 或 postback data 中
+        if not is_nutrient_search: # 辨識圖片的結果
             encoded_veg_name = urllib.parse.quote(veg_data['chinese_name'])
-            
-            # 按鈕 1: Postback Action，觸發後續的快速選單
+            # 按鈕 1: 我想了解這個更多！
             footer_buttons.append(
                 FlexButton(
-                    style="primary", # 使用 primary 樣式更醒目
+                    style="primary",
                     height="sm",
-                    color="#00B900", # 按鈕顏色
+                    color="#00B900",
                     action=PostbackAction(
                         label="我想了解這個更多！",
-                        # 將蔬菜 ID 和名稱都放在 postback data 中
+                        data=f"action=show_more_options&veg_id={veg_data['id']}&veg_name={encoded_veg_name}",
+                        displayText=f"我想了解關於「{veg_data['chinese_name']}」的更多資訊！"
+                    ),
+                )
+            )
+            # 按鈕 2: 看起來不太像…
+            footer_buttons.append(
+                FlexButton(
+                    style="secondary",
+                    height="sm",
+                    action=PostbackAction(
+                        label="看起來不太像…",
+                        data="action=recognize_again",
+                        displayText="嗯...這個辨識結果好像不太對"
+                    ),
+                )
+            )
+        # 營養查詢或文字搜尋的結果
+        else:
+            encoded_veg_name = urllib.parse.quote(veg_data['chinese_name'])
+            # 只顯示「我想了解這個更多！」按鈕
+            footer_buttons.append(
+                FlexButton(
+                    style="primary",
+                    height="sm",
+                    color="#00B900",
+                    action=PostbackAction(
+                        label="我想了解這個更多！",
                         data=f"action=show_more_options&veg_id={veg_data['id']}&veg_name={encoded_veg_name}",
                         displayText=f"我想了解關於「{veg_data['chinese_name']}」的更多資訊！"
                     ),
@@ -556,7 +674,6 @@ def _create_vegetable_flex_message(
                 action=URIAction(uri=image_url, label="查看圖片"),
             ),
             body=FlexBox(layout="vertical", contents=bubble_body_contents),
-            # 使用我們剛剛建立的按鈕列表
             footer=FlexBox(
                 layout="vertical",
                 spacing="sm",
@@ -613,42 +730,63 @@ def handle_postback(event):
     # 使用 urllib.parse.parse_qs 來安全地解析 postback data
     import urllib.parse
     data = event.postback.data
+    app.logger.info(f"Received postback data: {data}")
     params = urllib.parse.parse_qs(data)
     action = params.get('action', [None])[0]
-    app.logger.info(f"Received postback data: {data}")
     
     # 檢查是否為食譜查詢
     if action == "get_recipes":
-        # 解析 veg_id
         try:
-            params = dict(param.split('=') for param in data.split('&'))
-            veg_id = int(params.get('veg_id'))
-        except (ValueError, KeyError):
-            messaging_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[TextMessage(text="食譜查詢參數錯誤。")]
-                )
-            )
-            return
+            veg_id = params.get('veg_id', [None])[0]
+            if veg_id:
+                veg_id = int(veg_id)
+            else:
+                raise ValueError("Missing veg_id in postback data")
+            # 查詢食譜
+            recipes = get_recipes_by_vege_id(veg_id)
+            
+            # 建立回覆訊息
+            if recipes:
+                # ⭐ 建立 Image Carousel 訊息 ⭐
+                image_carousel_columns = []
+                web_url = os.getenv("url_5000", "http://localhost:5000")
+                for recipe in recipes:
+                    image_carousel_columns.append(
+                        ImageCarouselColumn(
+                            image_url=recipe["image_url"],
+                            action=URIAction(
+                                label=recipe["name"],
+                                uri=f"{web_url}/?section=recipe&id={recipe['id']}"
+                            )
+                        )
+                    )
 
-        # 查詢食譜
-        recipes = get_recipes_by_vege_id(veg_id)
-        
-        # 建立回覆訊息
-        if recipes:
-            flex_message = create_recipe_flex_carousel(recipes)
-            messaging_api.reply_message(
-                ReplyMessageRequest(
-                    reply_token=event.reply_token,
-                    messages=[flex_message]
+                image_carousel_message = TemplateMessage(
+                    alt_text="相關食譜",
+                    template=ImageCarouselTemplate(
+                        columns=image_carousel_columns
+                    )
                 )
-            )
-        else:
+
+                messaging_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[image_carousel_message]
+                    )
+                )
+            else:
+                messaging_api.reply_message(
+                    ReplyMessageRequest(
+                        reply_token=event.reply_token,
+                        messages=[TextMessage(text="找不到相關食譜喔！")]
+                    )
+                )
+        except Exception as e:
+            app.logger.error(f"Error handling get_recipes postback: {e}")
             messaging_api.reply_message(
                 ReplyMessageRequest(
                     reply_token=event.reply_token,
-                    messages=[TextMessage(text="找不到相關食譜喔！")]
+                    messages=[TextMessage(text="處理請求時發生錯誤，請稍後再試。")]
                 )
             )
     elif action == "show_more_options":
@@ -701,6 +839,24 @@ def handle_postback(event):
                     messages=[TextMessage(text="處理請求時發生錯誤，請稍後再試。")]
                 )
             )
+    
+    # ⭐ 新增：處理「看起來不太像…」的 postback
+    elif action == "recognize_again":
+        reply_message = TextMessage(
+            text="可以從其他角度再拍一張給菜菜子看嗎？",
+            quick_reply=QuickReply(
+                items=[
+                    QuickReplyItem(action=CameraAction(label="重新拍攝")),
+                    QuickReplyItem(action=CameraRollAction(label="重新上傳")),
+                ]
+            )
+        )
+        messaging_api.reply_message(
+            ReplyMessageRequest(
+                reply_token=event.reply_token,
+                messages=[reply_message]
+            )
+        )
 
 
 @handler.add(MessageEvent, message=ImageMessageContent)
@@ -738,36 +894,35 @@ def handle_image_message(event):
             app.logger.error(traceback.format_exc())
             veg_name = "未知蔬菜"
             confidence = 0.0
+        # 2. ⭐ 根據信心度決定回覆訊息
         prefix_message_text = ""
-        if confidence >= 0.8:
-            prefix_message_text = f'哼哼 根據我的判斷 它就是"{veg_name}"!!'
-            if confidence == 1.0:
-                prefix_message_text = f'真相只有一個 就是"{veg_name}"!!'
-        elif confidence >= 0.5:
-            prefix_message_text = f'可能是"{veg_name}"   也許讓我再看更清楚的一張'
-        else:
-            prefix_message_text = "歐內該  請提供更清晰的"
-        if confidence >= 0.5:
-            prefix_message_text += f"\n我有{confidence*100:.0f}%的信心"
+        if confidence >= 0.9:
+            prefix_message_text = f"菜菜子有高度的信心！這是{veg_name}！"
+        elif confidence >= 0.8:
+            prefix_message_text = f"菜菜子覺得這八成是 {veg_name} 唷～"
+        else: # < 0.8
+            prefix_message_text = "菜菜子不太確定，可以從其他角度再拍一張給我看嗎？"
 
-        # 這裡的調用已移除 MinIO 檔案名稱參數
-        vegetable_details = get_vegetables_by_name_or_alias(veg_name)
-        
+        # 3. 準備要發送的訊息列表
         messages_to_reply = [TextMessage(text=prefix_message_text)]
-        if (
-            confidence >= 0.5
-            and vegetable_details
-            and not isinstance(vegetable_details, str)
-        ):
-            flex_message = _create_vegetable_flex_message(
-                vegetable_details, f"辨識結果：{veg_name}"
-            )
-            if flex_message:
-                messages_to_reply.append(flex_message)
-        elif confidence < 0.5:
-            pass
-        else:
-            messages_to_reply.append(TextMessage(text="未能找到該蔬菜的詳細資訊。"))
+
+        # 4. 如果信心度 >= 80%，則準備並附加 Flex Message 卡片
+        if confidence >= 0.8:
+            vegetable_details = get_vegetables_by_name_or_alias(veg_name)
+            
+            if vegetable_details and isinstance(vegetable_details, list):
+                # 呼叫我們修改過的函式，傳入信心度
+                flex_message = _create_vegetable_flex_message(
+                    vegetable_details, 
+                    f"辨識結果：{veg_name}",
+                    confidence=confidence
+                )
+                if flex_message:
+                    messages_to_reply.append(flex_message)
+            else:
+                # 即使辨識出來，也可能資料庫裡沒有，做個保護
+                messages_to_reply.append(TextMessage(text=f"雖然辨識出是「{veg_name}」，但在我的資料庫裡找不到它的詳細資料耶！"))
+
         messaging_api.reply_message(
             ReplyMessageRequest(
                 reply_token=event.reply_token, messages=messages_to_reply
@@ -855,6 +1010,7 @@ def handle_text_message(event):
                         reply_message = _create_vegetable_flex_message(
                             valid_vegetables,
                             f"為您推薦 {nutrient_input} 相關蔬菜",
+                            is_nutrient_search=True,
                         )
                     else:
                         print(f"DEBUG: No valid data found for '{nutrient_input}' after filtering.")
@@ -872,25 +1028,6 @@ def handle_text_message(event):
         print(f"Failed to reply: {e}")
 
 
-
-@app.route("/api/image/<filename>")
-def get_image(filename):
-    # ... (MinIO 函式不變)
-    s3 = boto3.client(
-        "s3",
-        endpoint_url=os.getenv("MINIO_ENDPOINT"),
-        aws_access_key_id=os.getenv("MINIO_ACCESS_KEY"),
-        aws_secret_access_key=os.getenv("MINIO_SECRET_KEY"),
-        config=boto3.session.Config(signature_version="s3v4"),
-    )
-    bucket = os.getenv("MINIO_BUCKET_NAME", "veg-data-bucket")
-    key = f"images/{filename}"
-    try:
-        obj = s3.get_object(Bucket=bucket, Key=key)
-        return Response(obj["Body"].read(), mimetype="image/jpeg")
-    except Exception as e:
-        app.logger.error(f"MinIO 取檔失敗: bucket={bucket} key={key} error={e}", exc_info=True)
-        return "Not found", 404
 
 @app.route("/api/csv/<filename>")
 def get_csv(filename):
