@@ -63,7 +63,7 @@ def index():
 
 @app.route('/search/<veg_id>')
 def veg_search(veg_id):
-    return send_file('index.html')
+    return send_from_directory('templates', 'index.html')
 
 app.logger.setLevel(logging.INFO)
 for handler in app.logger.handlers:
@@ -277,13 +277,17 @@ def get_recipes(veg_id):
 
         # 將步驟合併為一個單一的字串，並新增預設圖片網址
         recipes_list = []
+        minio_bucket = os.getenv("MINIO_BUCKET_NAME", "veg-data-bucket")
+        flex_image_url = os.getenv("url_9000")
+        # 根據食譜 ID 產生 MinIO 圖片 URL
+        image_url = f"{flex_image_url}/{minio_bucket}/images/{recipe_id}.jpg"
         for recipe_data in recipes_map.values():
             steps_text = '\n'.join([f"步驟{s['step_no']}. {s['description']}" for s in recipe_data['steps']])
             recipes_list.append({
                 'id': recipe_data['id'],
                 'title': recipe_data['title'],
                 'instructions': steps_text,
-                'imageUrl': f'https://dummyimage.com/600x400/80c96a/fff&text={recipe_data["title"]}'
+                'imageUrl': image_url
             })
             
         return jsonify(recipes_list)
@@ -305,7 +309,6 @@ def get_recipes_by_vege_id(vege_id):
     
     recipes_data = []
 
-    # 取得 MinIO 相關環境變數
     minio_bucket = os.getenv("MINIO_BUCKET_NAME", "veg-data-bucket")
     try:
         cur = conn.cursor()
@@ -345,6 +348,53 @@ def get_recipes_by_vege_id(vege_id):
             conn.close()
             
     return recipes_data
+
+
+# 新的單一食譜 API
+@app.route('/api/recipe/<int:recipe_id>', methods=['GET'])
+def get_recipe_detail(recipe_id):
+    conn = get_db_connection()
+    if conn is None:
+        return jsonify({'error': '無法連接資料庫'}), 500
+
+    try:
+        cur = conn.cursor()
+        cur.execute("""
+            SELECT
+                mr.id AS recipe_id,
+                mr.recipe AS recipe_title,
+                rs.step_no,
+                rs.description
+            FROM main_recipe AS mr
+            JOIN recipe_steps AS rs ON mr.id = rs.recipe_id
+            WHERE mr.id = %s
+            ORDER BY rs.step_no;
+        """, (recipe_id,))
+        rows = cur.fetchall()
+
+        if not rows:
+            return jsonify({'error': '找不到該食譜'}), 404
+
+        steps_text = '\n'.join([f"步驟{r[2]}. {r[3]}" for r in rows])
+        minio_bucket = os.getenv("MINIO_BUCKET_NAME", "veg-data-bucket")
+        flex_image_url = os.getenv("url_9000")
+        # 根據食譜 ID 產生 MinIO 圖片 URL
+        image_url = f"{flex_image_url}/{minio_bucket}/images/{recipe_id}.jpg"
+        recipe = {
+            'id': rows[0][0],
+            'title': rows[0][1],
+            'instructions': steps_text,
+            'imageUrl': image_url
+        }
+        return jsonify(recipe)
+
+    except Exception as e:
+        app.logger.error(f"Error fetching recipe detail: {e}")
+        return jsonify({'error': str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
+
 
 def create_recipe_flex_carousel(recipes_data):
     """根據食譜資料建立 Flex Carousel"""
@@ -476,40 +526,43 @@ def _create_vegetable_flex_message(
         image_filename = urllib.parse.quote(f"{veg_name}.jpg")
         image_url = f"{flex_image_url}/veg-data-bucket/images/{image_filename}"
 
+        footer_buttons = []
+        if 'id' in veg_data:
+            # 將蔬菜名稱編碼以安全地放在 URL 或 postback data 中
+            encoded_veg_name = urllib.parse.quote(veg_data['chinese_name'])
+            
+            # 按鈕 1: Postback Action，觸發後續的快速選單
+            footer_buttons.append(
+                FlexButton(
+                    style="primary", # 使用 primary 樣式更醒目
+                    height="sm",
+                    color="#00B900", # 按鈕顏色
+                    action=PostbackAction(
+                        label="我想了解這個更多！",
+                        # 將蔬菜 ID 和名稱都放在 postback data 中
+                        data=f"action=show_more_options&veg_id={veg_data['id']}&veg_name={encoded_veg_name}",
+                        displayText=f"我想了解關於「{veg_data['chinese_name']}」的更多資訊！"
+                    ),
+                )
+            )
+
         bubble = FlexBubble(
-    direction="ltr",
-    hero=FlexImage(
-        url=image_url,
-        size="full",
-        aspect_ratio="1.5:1",
-        aspect_mode="cover",
-        action=URIAction(uri=image_url, label="查看圖片"),
-    ),
-    body=FlexBox(layout="vertical", contents=bubble_body_contents),
-    footer=FlexBox(
-        layout="vertical",
-        spacing="sm",
-        contents=[
-            # 這裡加入條件判斷，只有當 veg_data 包含 'id' 時才建立按鈕
-            FlexButton(
-                style="link",
-                height="sm",
-                action=PostbackAction(
-                    label="查看相關食譜",
-                    data=f"action=get_recipes&veg_id={veg_data['id']}",
-                    display_text="為您查詢相關食譜..."
-                ),
-            ) if 'id' in veg_data else None,
-            FlexButton(
-                style="link",
-                height="sm",
-                action=URIAction(
-                    label="前往網站看得更詳細", uri=f"{web_url}/?section=detail&id={veg_data['id']}"
-                ),
-            ) if 'id' in veg_data else None,
-        ],
-    ),
-)
+            direction="ltr",
+            hero=FlexImage(
+                url=image_url,
+                size="full",
+                aspect_ratio="1.5:1",
+                aspect_mode="cover",
+                action=URIAction(uri=image_url, label="查看圖片"),
+            ),
+            body=FlexBox(layout="vertical", contents=bubble_body_contents),
+            # 使用我們剛剛建立的按鈕列表
+            footer=FlexBox(
+                layout="vertical",
+                spacing="sm",
+                contents=footer_buttons,
+            ),
+        )
         bubbles.append(bubble)
     if not bubbles:
         return TextMessage(
@@ -521,7 +574,6 @@ def _create_vegetable_flex_message(
             contents=FlexCarousel(contents=bubbles),
         )
 
-# ... (其餘程式碼不變)
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET = os.getenv("LINE_CHANNEL_SECRET")
 if not LINE_CHANNEL_ACCESS_TOKEN or not LINE_CHANNEL_SECRET:
@@ -558,11 +610,15 @@ def callback():
 # 新增 PostbackEvent 處理
 @handler.add(PostbackEvent)
 def handle_postback(event):
+    # 使用 urllib.parse.parse_qs 來安全地解析 postback data
+    import urllib.parse
     data = event.postback.data
+    params = urllib.parse.parse_qs(data)
+    action = params.get('action', [None])[0]
     app.logger.info(f"Received postback data: {data}")
     
     # 檢查是否為食譜查詢
-    if data.startswith("action=get_recipes"):
+    if action == "get_recipes":
         # 解析 veg_id
         try:
             params = dict(param.split('=') for param in data.split('&'))
@@ -595,6 +651,57 @@ def handle_postback(event):
                     messages=[TextMessage(text="找不到相關食譜喔！")]
                 )
             )
+    elif action == "show_more_options":
+        try:
+            veg_id = params.get('veg_id', [None])[0]
+            # 解碼蔬菜名稱
+            encoded_veg_name = params.get('veg_name', [None])[0]
+            veg_name = urllib.parse.unquote(encoded_veg_name)
+            
+            if not veg_id or not veg_name:
+                raise ValueError("Missing veg_id or veg_name in postback")
+
+            web_url = os.getenv("url_5000", "http://localhost:5000")
+
+            # 建立帶有快速回覆按鈕的訊息
+            reply_message = TextMessage(
+                text=f"您想了解「{veg_name}」的什麼資訊呢？",
+                quick_reply=QuickReply(
+                    items=[
+                        QuickReplyItem(action=PostbackAction(
+                            label="相關食譜",
+                            data=f"action=get_recipes&veg_id={veg_id}",
+                            displayText=f"查詢「{veg_name}」的食譜"
+                        )),
+                        # 暫時用文字訊息代替，未來可擴充為價格查詢 postback
+                        QuickReplyItem(action=MessageAction(
+                            label="近期價格",
+                            text=f"我想知道「{veg_name}」的價格"
+                        )),
+                        QuickReplyItem(action=URIAction(
+                            label="詳細營養資訊",
+                            uri=f"{web_url}/?section=detail&id={veg_id}"
+                        )),
+                    ]
+                )
+            )
+            
+            messaging_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[reply_message]
+                )
+            )
+
+        except Exception as e:
+            app.logger.error(f"Error handling show_more_options postback: {e}")
+            messaging_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=[TextMessage(text="處理請求時發生錯誤，請稍後再試。")]
+                )
+            )
+
 
 @handler.add(MessageEvent, message=ImageMessageContent)
 def handle_image_message(event):

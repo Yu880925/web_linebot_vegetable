@@ -65,19 +65,28 @@ function renderPageBasedOnUrl() {
     const id = params.get('id');
 
     if (section === 'detail' && id) {
-        // 新增的邏輯：如果URL是 /?section=detail&id=...，則顯示蔬菜詳細頁
         showVegetableDetail(id, false);
     } else if (section === 'recipe' && id) {
-        // 處理食譜詳細頁
-        showRecipeDetail(id, false);
+        // 改成直接抓單一食譜資料
+        fetch(`/api/recipe/${id}`)
+            .then(res => {
+                if (!res.ok) throw new Error('無法取得食譜資料');
+                return res.json();
+            })
+            .then(recipe => {
+                showSingleRecipeDetail(recipe); // 新增函式
+            })
+            .catch(err => {
+                console.error('載入食譜失敗:', err);
+                showSection('recipe', false);
+            });
     } else if (section) {
-        // 處理其他一般頁面（如總覽頁、價格預測頁）
         showSection(section, false);
     } else {
-        // 如果URL沒有任何參數，則預設顯示食譜頁
         showSection('recipe', false);
     }
 }
+
 
 // 優化 popstate 事件處理
 window.addEventListener('popstate', (event) => {
@@ -556,6 +565,49 @@ function showRecipeDetail(id, pushState = true) {
     if (window.innerWidth <= 768) sidebar.classList.remove('active');
     window.scrollTo(0, 0);
 }
+
+function showSingleRecipeDetail(recipe) {
+    document.querySelectorAll('.content-section').forEach(s => s.classList.remove('active'));
+    document.getElementById('detailPage')?.remove();
+
+    let detailSection = document.createElement('section');
+    detailSection.id = 'detailPage';
+    detailSection.className = 'content-section active';
+    document.querySelector('.main-content').appendChild(detailSection);
+
+    detailSection.innerHTML = `
+        <div class="detail-container">
+            <div class="back-button-container">
+                <button class="btn btn-primary" onclick="goBackToRecipes()"><i class="fas fa-arrow-left"></i> 返回食譜列表</button>
+            </div>
+            <header class="detail-header recipe-header">
+                <img src="${recipe.imageUrl}" alt="${recipe.title}" class="detail-header-image">
+                <div class="detail-header-info">
+                    <h1>${recipe.title}</h1>
+                    <div class="recipe-header-meta">
+                        <div class="meta-item"><i class="fas fa-clock"></i><span>30分鐘</span></div>
+                        <div class="meta-item"><i class="fas fa-signal"></i><span>簡單</span></div>
+                        <div class="meta-item"><i class="fas fa-users"></i><span>2-3人份</span></div>
+                    </div>
+                </div>
+            </header>
+
+            <section class="detail-section">
+                <h3><i class="fas fa-shoe-prints"></i> 烹飪步驟</h3>
+                <div class="steps-container">
+                    <div class="step-item">
+                        <div class="step-content">
+                            <p class="description">${recipe.instructions.replace(/\n/g, '<br>')}</p>
+                        </div>
+                    </div>
+                </div>
+            </section>
+        </div>`;
+
+    if (window.innerWidth <= 768) sidebar.classList.remove('active');
+    window.scrollTo(0, 0);
+}
+
 
 // 返回函式
 function goBackToOverview() {

@@ -19,25 +19,25 @@ services:
       retries: 3
       start_period: 10s
 
-  postgres:
-    build:
-      context: .
-      dockerfile: Dockerfile.postgres
-    container_name: postgres
-    ports:
-      - "5432:5432"
-    env_file:
-      - .env
-    volumes:
-      - ./init:/docker-entrypoint-initdb.d
-      - postgres-data:/var/lib/postgresql/data # 新增此行以確保資料持久化
-    healthcheck:
-      test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-    command: postgres -c 'listen_addresses=0.0.0.0'
+  # postgres:
+  #   build:
+  #     context: .
+  #     dockerfile: Dockerfile.postgres
+  #   container_name: postgres
+  #   ports:
+  #     - "5432:5432"
+  #   env_file:
+  #     - .env
+  #   volumes:
+  #     - ./init:/docker-entrypoint-initdb.d
+  #     - postgres-data:/var/lib/postgresql/data # 新增此行以確保資料持久化
+  #   healthcheck:
+  #     test: [ "CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB" ]
+  #     interval: 10s
+  #     timeout: 5s
+  #     retries: 5
+  #     start_period: 30s
+  #   command: postgres -c 'listen_addresses=0.0.0.0'
     
   linebot_app:
     build: . # 從當前目錄的 Dockerfile 建構映像
@@ -49,11 +49,11 @@ services:
     depends_on:
       minio:
         condition: service_healthy # 確保 MinIO 服務啟動並健康後再啟動 linebot_app
-      postgres:
-        condition: service_healthy # 確保 Postgres 服務啟動並健康後再啟動 linebot_app
+      # postgres:
+      #   condition: service_healthy # 確保 Postgres 服務啟動並健康後再啟動 linebot_app
     volumes:
       - .:/app # 將主機的當前目錄映射到容器的 /app，方便開發時的代碼同步
     
 volumes:
   minio-data:
-  postgres-data:
+  # postgres-data:
