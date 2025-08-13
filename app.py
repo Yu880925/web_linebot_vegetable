@@ -10,6 +10,8 @@ from flask import Flask, abort, render_template, request, send_from_directory, j
 from flask_cors import CORS
 from collections import defaultdict
 import psycopg2
+import psycopg2.extras # 為了使用 DictCursor
+import datetime # 為了取得當前月份
 from linebot.exceptions import InvalidSignatureError
 from linebot.v3.messaging import ApiClient, Configuration, MessagingApi
 from rec_veg.rec_veg import VegetablePredictor
@@ -48,10 +50,8 @@ from linebot.v3.webhooks.models import (
     MessageEvent,
     TextMessageContent,
 )
-
-# 新增
-from linebot.v3.webhooks.models import PostbackEvent  # 匯入 PostbackEvent
-import json # 新增 json 模組
+from linebot.v3.webhooks.models import PostbackEvent 
+import json 
 
 
 # 新增日誌以確認 rec_veg 模組載入
@@ -373,6 +373,75 @@ def get_recipes(veg_id):
         if conn:
             conn.close()
 
+
+# 請找到並替換掉原本的 get_seasonal_vegetables 函式
+
+def get_seasonal_vegetables():
+    """查詢當季最便宜的前三種蔬菜"""
+    conn = get_db_connection()
+    if not conn:
+        app.logger.error("無法建立資料庫連線")
+        return []
+
+    seasonal_veges = []
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+
+        current_month = datetime.datetime.now().month
+        month_column = f"fresh_month_{current_month:02d}"
+        app.logger.info(f"正在查詢月份欄位: {month_column}")
+
+        # === 修改後的 SQL 查詢 START ===
+        # 修正1: JOIN 的資料表改為 daily_avg_price
+        # 修正2: JOIN 的條件改為 b.id = p.vege_id
+        # 修正3: 使用子查詢，透過 DISTINCT ON 和 ORDER BY ObsTime DESC 取得每種蔬菜最新的一筆價格
+        query = f"""
+            SELECT
+                b.id,
+                b.vege_name,
+                a.alias,
+                p.avg_price_per_kg
+            FROM
+                basic_vege AS b
+            LEFT JOIN
+                vege_alias AS a ON b.id = a.vege_id AND a.similarity_weight = 1
+            LEFT JOIN (
+                SELECT DISTINCT ON (vege_id)
+                    vege_id,
+                    avg_price_per_kg
+                FROM
+                    daily_avg_price
+                ORDER BY
+                    vege_id, "ObsTime" DESC
+            ) AS p ON b.id = p.vege_id
+            WHERE
+                b.{month_column} = 1
+            ORDER BY
+                p.avg_price_per_kg ASC NULLS LAST, b.vege_name
+            LIMIT 3;
+        """
+        # === 修改後的 SQL 查詢 END ===
+
+        app.logger.info(f"執行的 SQL 查詢: {query}")
+        cur.execute(query)
+        results = cur.fetchall()
+        
+        seasonal_veges = [dict(row) for row in results]
+        app.logger.info(f"從資料庫查詢到 {len(seasonal_veges)} 筆當季蔬菜。")
+        
+        return seasonal_veges
+
+    except psycopg2.Error as e:
+        app.logger.error(f"查詢當季蔬菜時發生資料庫錯誤: {e}")
+        return []
+    except Exception as e:
+        app.logger.error(f"查詢當季蔬菜時發生未知錯誤: {e}")
+        return []
+    finally:
+        if conn:
+            conn.close()
+
+
 def get_recipes_by_vege_id(vege_id):
     """根據 vege_id 查詢食譜及其步驟"""
     conn = get_db_connection()
@@ -466,6 +535,74 @@ def get_recipe_detail(recipe_id):
     finally:
         if conn:
             conn.close()
+
+
+def create_seasonal_flex_message(seasonal_veges):
+    """根據當季蔬菜資料建立 Flex Carousel"""
+    import urllib.parse
+    if not seasonal_veges:
+        return None
+
+    bubbles = []
+    for veg in seasonal_veges:
+        veg_name = veg["vege_name"]
+        alias_text = f"別名：{veg['alias']}" if veg["alias"] else "無主要別名"
+        
+        # 處理價格顯示，如果沒有價格資訊則顯示提示文字
+        if veg["avg_price_per_kg"] is not None:
+            price_text = f"目前平均售價：{veg['avg_price_per_kg']:.1f} 元/公斤"
+        else:
+            price_text = "目前暫無平均報價"
+
+        # 圖片 URL
+        flex_image_url = os.getenv("url_9000")
+        image_filename = urllib.parse.quote(f"{veg_name}.jpg")
+        image_url = f"{flex_image_url}/veg-data-bucket/images/{image_filename}"
+        
+        # Postback data
+        encoded_veg_name = urllib.parse.quote(veg_name)
+        postback_data = f"action=show_more_options&veg_id={veg['id']}&veg_name={encoded_veg_name}"
+
+        bubble = FlexBubble(
+            direction="ltr",
+            hero=FlexImage(
+                url=image_url,
+                size="full",
+                aspect_ratio="1.5:1",
+                aspect_mode="cover",
+                action=URIAction(uri=image_url, label="查看圖片"),
+            ),
+            body=FlexBox(
+                layout="vertical",
+                contents=[
+                    FlexText(text=veg_name, weight="bold", size="xl"),
+                    FlexText(text=alias_text, size="sm", color="#aaaaaa", margin="md"),
+                    FlexText(text=price_text, size="sm", color="#555555", margin="md"),
+                ],
+            ),
+            footer=FlexBox(
+                layout="vertical",
+                spacing="sm",
+                contents=[
+                    FlexButton(
+                        style="primary",
+                        height="sm",
+                        color="#00B900",
+                        action=PostbackAction(
+                            label=f"我想了解 {veg_name} 更多！",
+                            data=postback_data,
+                            displayText=f"我想了解關於「{veg_name}」的更多資訊！",
+                        ),
+                    ),
+                ],
+            ),
+        )
+        bubbles.append(bubble)
+
+    return FlexMessage(
+        alt_text="當季蔬菜推薦",
+        contents=FlexCarousel(contents=bubbles)
+    )
 
 
 def create_recipe_flex_carousel(recipes_data):
@@ -568,13 +705,13 @@ def _create_vegetable_flex_message(
             FlexText(
                 text=aliases_text, size="sm", color="#aaaaaa", wrap=True, margin="sm"
             ),
-            FlexText(
-                text=all_nutrients_text,
-                size="sm",
-                color="#555555",
-                wrap=True,
-                margin="md",
-            ),
+            # FlexText(
+            #     text=all_nutrients_text,
+            #     size="sm",
+            #     color="#555555",
+            #     wrap=True,
+            #     margin="md",
+            # ),
         ]
         if (
             is_nutrient_search
@@ -948,8 +1085,10 @@ def handle_image_message(event):
 def handle_text_message(event):
     print(f"Received text: {event.message.text}")
     try:
-        reply_message = None
+        messages_to_reply = []
         text = event.message.text.strip()
+
+        seasonal_keywords = ("當季蔬菜", "/fresh", "今天適合買什麼", "這個月有什麼蔬菜", "盛產的有什麼")
 
         if text == "辨識蔬菜":
             reply_message = TextMessage(
@@ -961,9 +1100,45 @@ def handle_text_message(event):
                     ]
                 ),
             )
+            messages_to_reply.append(reply_message)
         elif text == "食譜推薦":
             reply_message = TextMessage(
                 text="請輸入您想用甚麼食材，來份佳餚呢"
+            )
+            messages_to_reply.append(reply_message)
+        elif text in seasonal_keywords:
+            app.logger.info(f"Keyword matched for seasonal vegetables: {text}")
+            seasonal_veges = get_seasonal_vegetables()
+            
+            if seasonal_veges:
+                # 訊息 1: 引導文字
+                messages_to_reply.append(TextMessage(text="菜菜子幫你找了一些當季便宜的好選擇！"))
+                
+                # 訊息 2: Flex Message 卡片
+                flex_message = create_seasonal_flex_message(seasonal_veges)
+                messages_to_reply.append(flex_message)
+
+                # 訊息 3: 查看完整清單的按鈕
+                web_url = os.getenv("url_5000", "http://localhost:5000")
+                see_more_message = TextMessage(
+                    text="想知道菜菜子知道的所有當季蔬菜嗎？",
+                    quick_reply=QuickReply(items=[
+                        QuickReplyItem(action=URIAction(
+                            label="查看當季蔬菜清單",
+                            uri=f"{web_url}/?section=fresh" # 依照你的規劃指向 web/fresh
+                        ))
+                    ])
+                )
+                messages_to_reply.append(see_more_message)
+
+            else:
+                messages_to_reply.append(TextMessage(text="哎呀，菜菜子目前找不到符合條件的當季蔬菜資訊耶！"))
+            
+            messaging_api.reply_message(
+                ReplyMessageRequest(
+                    reply_token=event.reply_token,
+                    messages=messages_to_reply
+                )
             )
         else:
             nutrient_input = text

@@ -1,8 +1,9 @@
 import pandas as pd
 import os
 import re
-import psycopg2 # 新增
+import psycopg2
 from dotenv import load_dotenv
+import difflib # 引入 difflib 函式庫
 
 load_dotenv()
 
@@ -40,6 +41,19 @@ def get_db_connection():
         print(f"Database connection failed: {e}")
         return None
 
+def find_closest_nutrient(input_name: str) -> str:
+    """使用 difflib 找出最接近的營養成分名稱"""
+    # 獲取所有營養成分的中文名稱作為比對的列表
+    all_nutrients_chinese = list(NUTRIENT_MAPPING.keys())
+    
+    # 使用 difflib.get_close_matches 找出最接近的選項
+    matches = difflib.get_close_matches(input_name, all_nutrients_chinese, n=1, cutoff=0.6)
+    
+    if matches:
+        return matches[0] # 回傳最接近的中文名稱
+    
+    return None # 如果沒有足夠接近的匹配，回傳 None
+
 def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
     """
     根據指定的營養成分名稱，從資料庫中找出含量最高的五項蔬菜。
@@ -51,18 +65,21 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
     try:
         cursor = conn.cursor()
 
-        # 嘗試透過映射字典獲取對應的英文欄位名稱
+        # 嘗試精確匹配
         actual_nutrient_column = NUTRIENT_MAPPING.get(nutrient_name)
-        input_nutrient_lower = nutrient_name.lower().strip()
+        
+        # 如果精確匹配失敗，嘗試模糊搜尋
+        if not actual_nutrient_column:
+            closest_match = find_closest_nutrient(nutrient_name)
+            if closest_match:
+                print(f"使用模糊搜尋找到最接近的營養成分：{closest_match}")
+                nutrient_name = closest_match
+                actual_nutrient_column = NUTRIENT_MAPPING.get(nutrient_name)
+        
+        if not actual_nutrient_column:
+            return f"錯誤：找不到與 '{nutrient_name}' 相關的營養成分數據。請檢查輸入是否正確。"
 
-        # 確定實際使用的營養成分欄位名稱
-        if actual_nutrient_column:
-            pass
-        elif input_nutrient_lower in NUTRIENT_MAPPING.values():
-            actual_nutrient_column = input_nutrient_lower
-        else:
-            return f"錯誤：找不到營養成分 '{nutrient_name}' 的數據。請檢查輸入是否正確或檔案中是否存在該營養成分。"
-
+        # 後續的查詢邏輯不變
         # 1. 查詢 vege_nutrition，找出該營養成分含量最高的五項
         query_nutrition = f"""
             SELECT vege_id, {actual_nutrient_column}, *
@@ -197,8 +214,3 @@ def get_vegetables_by_name_or_alias(search_term: str, **kwargs):
     finally:
         if conn:
             conn.close()
-
-# 為了在 `app.py` 中調用時保持一致，這裡保留了原本的函數名稱。
-# 函式簽名也進行了調整，不再需要 `nutrition_obj_name` 等參數。
-# 這邊的 **kwargs 是為了相容於 app.py 裡的呼叫方式，實質上沒有使用
-# 在 app.py 裡，這些參數會被忽略。
