@@ -63,6 +63,35 @@
             color: #666;
             line-height: 1.6;
         }
+
+        .season-filter-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            margin-bottom: 20px;
+        }
+
+        .season-filter-btn {
+            padding: 8px 16px;
+            border: 1px solid #ddd;
+            background-color: #f8f8f8;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 14px;
+        }
+
+        .season-filter-btn:hover {
+            background-color: #e9e9e9;
+            border-color: #ccc;
+        }
+
+        .season-filter-btn.active {
+            background-color: #80c96a;
+            color: white;
+            border-color: #80c96a;
+            font-weight: 500;
+        }
     </style>
 </head>
 
@@ -106,6 +135,13 @@
                     <input type="text" placeholder="搜尋蔬菜..." id="vegetableSearch">
                     <i class="fas fa-search"></i>
                 </div>
+            </div>
+            <div id="seasonFilter" class="season-filter-container">
+                <button class="season-filter-btn active" data-season="all">全部</button>
+                <button class="season-filter-btn" data-season="spring">春季</button>
+                <button class="season-filter-btn" data-season="summer">夏季</button>
+                <button class="season-filter-btn" data-season="autumn">秋季</button>
+                <button class="season-filter-btn" data-season="winter">冬季</button>
             </div>
             <div class="vegetable-grid" id="vegetableGrid">
             </div>

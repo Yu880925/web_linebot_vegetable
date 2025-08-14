@@ -140,6 +140,44 @@ def get_minio_client():
         return None
 
 
+def get_vegetable_seasons(vege_id):
+    conn = get_db_connection()
+    if not conn:
+        return ""
+    
+    season_mapping = {
+        (3, 4, 5): '春季',
+        (6, 7, 8): '夏季',
+        (9, 10, 11): '秋季',
+        (12, 1, 2): '冬季'
+    }
+    seasons = []
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        # 查詢所有 fresh_month_XX 欄位
+        cur.execute(f"SELECT {' ,'.join([f'fresh_month_{i:02d}' for i in range(1, 13)])} FROM basic_vege WHERE id = %s;", (vege_id,))
+        row = cur.fetchone()
+        if row:
+            for month in range(1, 13):
+                month_column = f'fresh_month_{month:02d}'
+                if row[month_column] == 1:
+                    for months_in_season, season_name in season_mapping.items():
+                        if month in months_in_season and season_name not in seasons:
+                            seasons.append(season_name)
+    except Exception as e:
+        app.logger.error(f"獲取蔬菜季節失敗: {e}")
+    finally:
+        if conn:
+            conn.close()
+    
+    # 如果沒有找到季節，則回傳 "全年"
+    if not seasons:
+        return "全年"
+    
+    return ",".join(seasons)
+
+
+
 # @app.route("/api/image/<filename>")
 # def get_image(filename):
 #     # ... (MinIO 函式不變)
@@ -208,7 +246,7 @@ def get_vegetables():
 
         veg_list = []
         for veg_id, veg_name in rows:
-            # 隨機價格歷史
+            season_string = get_vegetable_seasons(veg_id)
             base_price = random.randint(20, 40)
             price_history = [max(5, base_price + random.randint(-3, 3)) for _ in range(30)]
             current_price = price_history[-1]
@@ -222,7 +260,7 @@ def get_vegetables():
                 'id': veg_id,
                 'name': veg_name,
                 'description': f"新鮮{veg_name}，營養豐富，是您餐桌上的最佳選擇。",
-                'season': random.choice(['春季', '夏季', '秋季', '冬季', '全年']),
+                'season': season_string,
                 'priceChange': price_change,
                 'currentPrice': current_price,
                 'image': f"/api/image/{veg_name}.jpg",
@@ -272,11 +310,13 @@ def get_vegetable_detail(veg_id):
             f"{round((current_price - previous_price) / previous_price * 100, 1)}%"
         )
 
+        season_string = get_vegetable_seasons(veg_id)
+
         vegetable = {
             'id': veg_id,
             'name': veg_name,
             'description': f"新鮮{veg_name}，營養豐富，是您餐桌上的最佳選擇。",
-            'season': random.choice(['春季', '夏季', '秋季', '冬季', '全年']),
+            'season': season_string,
             'priceChange': price_change,
             'currentPrice': current_price,
             'image': f"/api/image/{veg_name}.jpg",
@@ -374,7 +414,19 @@ def get_recipes(veg_id):
             conn.close()
 
 
-# 請找到並替換掉原本的 get_seasonal_vegetables 函式
+
+def get_current_season():
+    month = datetime.datetime.now().month
+    if 3 <= month <= 5:
+        return "spring"
+    elif 6 <= month <= 8:
+        return "summer"
+    elif 9 <= month <= 11:
+        return "autumn"
+    else:
+        return "winter"
+
+
 
 def get_seasonal_vegetables():
     """查詢當季最便宜的前三種蔬菜"""
@@ -542,6 +594,7 @@ def create_seasonal_flex_message(seasonal_veges):
     import urllib.parse
     if not seasonal_veges:
         return None
+        
 
     bubbles = []
     for veg in seasonal_veges:
@@ -1116,16 +1169,24 @@ def handle_text_message(event):
                 
                 # 訊息 2: Flex Message 卡片
                 flex_message = create_seasonal_flex_message(seasonal_veges)
+                app.logger.info(f"Flex message created: {flex_message}")
+                if flex_message:
+                    app.logger.info(f"Flex message contents: {flex_message.contents}")
                 messages_to_reply.append(flex_message)
 
-                # 訊息 3: 查看完整清單的按鈕
+
+
                 web_url = os.getenv("url_5000", "http://localhost:5000")
+                season = get_current_season()
+                seasonal_url = f"{web_url}/?section=overview&season={season}"
+
+                # 訊息 3: 查看完整清單的按鈕
                 see_more_message = TextMessage(
                     text="想知道菜菜子知道的所有當季蔬菜嗎？",
                     quick_reply=QuickReply(items=[
                         QuickReplyItem(action=URIAction(
                             label="查看當季蔬菜清單",
-                            uri=f"{web_url}/?section=fresh" # 依照你的規劃指向 web/fresh
+                            uri=seasonal_url # 依照你的規劃指向 web/fresh
                         ))
                     ])
                 )

@@ -1,4 +1,5 @@
 // 全域變數儲存資料
+let allVegetables = [];
 let vegetables = [];
 let recipes = [];
 let vegNameMapping = {};
@@ -18,6 +19,9 @@ const uploadBtn = document.getElementById('uploadBtn');
 const imageUpload = document.getElementById('imageUpload');
 const vegetableTagsContainer = document.querySelector('.vegetable-tags-container');
 const recipeGrid = document.getElementById('recipeGrid');
+const seasonFilterContainer = document.getElementById('seasonFilter');
+const vegetableGrid = document.getElementById('vegetableGrid');
+const priceResults = document.getElementById('priceResults');
 
 // 初始化
 document.addEventListener('DOMContentLoaded', async function () {
@@ -25,40 +29,87 @@ document.addEventListener('DOMContentLoaded', async function () {
     await initializeApp();
 });
 
-async function fetchVegetablesForOverviewAndPrice() {
-    try {
-        const response = await fetch('/api/vegetables');
-        if (!response.ok) throw new Error('無法取得蔬菜資料');
-        vegetables = await response.json(); // 更新全域變數
-        renderVegetables();
-        renderPricePredictions();
-    } catch (error) {
-        console.error('載入蔬菜資料失敗:', error);
-    }
+function getQueryParam(param) {
+    const urlParams = new URLSearchParams(window.location.search);
+    return urlParams.get(param);
 }
+
+function filterBySeason(vegetables, season) {
+    if (!season || season === 'all') {
+        return vegetables; // 如果季節是 'all' 或不存在，回傳全部蔬菜
+    }
+    // 將英文參數轉換為後端使用的中文字串
+    const seasonMapping = {
+        spring: '春季',
+        summer: '夏季',
+        autumn: '秋季',
+        winter: '冬季'
+    };
+    const chineseSeason = seasonMapping[season.toLowerCase()];
+    if (!chineseSeason) {
+        console.warn('無效的季節參數:', season);
+        return vegetables; // 如果參數無效，回傳所有蔬菜
+    }
+    // 修改此處的篩選邏輯，支援多季節
+    return vegetables.filter(v => {
+        // 如果 v.season 是字串，檢查它是否包含被篩選的季節
+        if (typeof v.season === 'string') {
+            return v.season.includes(chineseSeason);
+        }
+        // 如果 v.season 是陣列，檢查陣列中是否包含被篩選的季節
+        if (Array.isArray(v.season)) {
+            return v.season.includes(chineseSeason);
+        }
+        // 如果都不是，則不匹配
+        return false;
+    });
+}
+
+
+function updateSeasonFilterButtons(activeSeason) {
+    const buttons = seasonFilterContainer.querySelectorAll('.season-filter-btn');
+    buttons.forEach(button => {
+        if (button.dataset.season === activeSeason) {
+            button.classList.add('active');
+        } else {
+            button.classList.remove('active');
+        }
+    });
+}
+
 
 async function initializeApp() {
     try {
-        await fetchVegetablesForOverviewAndPrice(); // 先抓總覽 & 價格用的資料
-        await fetchVegetableTags(); // 再抓食譜頁標籤
+        const response = await fetch('/api/vegetables');
+        if (!response.ok) throw new Error('無法取得蔬菜資料');
+        allVegetables = await response.json(); // 正確賦值給全域變數
 
-        if (vegetables.length > 0) {
-            const firstVegId = vegetables[0].id;
+        const seasonParam = getQueryParam('season') || 'all';
+        vegetables = filterBySeason(allVegetables, seasonParam); // 根據 URL 參數或預設值篩選
+
+        updateSeasonFilterButtons(seasonParam); // 更新按鈕狀態
+
+        // 使用篩選後的資料渲染畫面
+        renderVegetables();
+        renderPricePredictions();
+
+        await fetchVegetableTags();
+        if (allVegetables.length > 0) {
+            const firstVegId = allVegetables[0].id;
             document.querySelector(`.vegetable-tag[data-id="${firstVegId}"]`)?.classList.add('active');
             await fetchRecipesByVegId(firstVegId);
         }
+
         renderPageBasedOnUrl();
+
     } catch (error) {
         console.error('應用程式初始化失敗:', error);
+        // 可在此處顯示錯誤訊息給使用者
     }
 }
 
 
-// ... (其他函式如 renderPageBasedOnUrl, showSection, parseCSVLine 等不變)
 
-// 統一的頁面渲染函式，處理初始載入和歷史紀錄變更
-// ...
-// ...
 function renderPageBasedOnUrl() {
     const params = new URLSearchParams(window.location.search);
     const section = params.get('section');
@@ -83,7 +134,7 @@ function renderPageBasedOnUrl() {
     } else if (section) {
         showSection(section, false);
     } else {
-        showSection('recipe', false);
+        showSection('overview', false);
     }
 }
 
@@ -94,6 +145,7 @@ window.addEventListener('popstate', (event) => {
 });
 
 function showSection(targetId, pushState = true) {
+    document.getElementById('detailPage')?.remove();
     contentSections.forEach(section => {
         section.classList.remove('active');
     });
@@ -110,7 +162,13 @@ function showSection(targetId, pushState = true) {
         }
     }
     if (pushState) {
-        history.pushState({ target: targetId }, '', `/?section=${targetId}`);
+        const currentSeason = document.querySelector('.season-filter-btn.active')?.dataset.season || 'all';
+        let newUrl = `/?section=${targetId}`;
+        // 如果在總覽頁且有季節篩選，則保留參數
+        if (targetId === 'overview' && currentSeason !== 'all') {
+            newUrl += `&season=${currentSeason}`;
+        }
+        history.pushState({ target: targetId }, '', newUrl);
     }
     if (window.innerWidth <= 768) sidebar.classList.remove('active');
     window.scrollTo(0, 0);
@@ -201,9 +259,8 @@ function generateVegetablesData() {
 
 // 渲染蔬菜總覽卡片
 function renderVegetables() {
-    const grid = document.getElementById('vegetableGrid');
-    if (!grid) return;
-    grid.innerHTML = vegetables.map(veg => `
+    if (!vegetableGrid) return;
+    vegetableGrid.innerHTML = vegetables.map(veg => `
         <div class="vegetable-card" onclick="showVegetableDetail(${veg.id}, true)" data-name="${veg.name.toLowerCase()}">
             <img src="${veg.image}" alt="${veg.name}" loading="lazy">
             <div class="card-content">
@@ -222,9 +279,8 @@ function renderVegetables() {
 
 // 渲染價格預測頁面
 function renderPricePredictions() {
-    const container = document.getElementById('priceResults');
-    if (!container) return;
-    container.innerHTML = vegetables.map(veg => `
+    if (!priceResults) return;
+    priceResults.innerHTML = vegetables.map(veg => `
         <div class="price-card" data-name="${veg.name.toLowerCase()}">
             <div class="price-card-info">
                 <img src="${veg.image}" alt="${veg.name}" loading="lazy">
@@ -259,7 +315,8 @@ function renderPricePredictions() {
 // 通用的圖表更新函式
 function updatePriceChart(event, canvasId, vegId, days, btnElement = null) {
     if (event) event.stopPropagation();
-    const vegetable = vegetables.find(v => v.id === vegId);
+    // 修改：從 allVegetables 裡找，確保無論當前篩選如何，都能找到正確蔬菜的歷史資料
+    const vegetable = allVegetables.find(v => v.id === vegId);
     if (!vegetable) return;
     const canvas = document.getElementById(canvasId);
     if (!canvas) return;
@@ -323,11 +380,8 @@ function renderRecipes() {
 // 讀取蔬菜標籤
 async function fetchVegetableTags() {
     try {
-        const response = await fetch('/api/vegetables');
-        if (!response.ok) throw new Error('無法取得蔬菜列表');
-        vegetables = await response.json();
-
-        vegetableTagsContainer.innerHTML = vegetables.map(veg =>
+        // 使用已載入的 allVegetables，避免重複呼叫 API
+        vegetableTagsContainer.innerHTML = allVegetables.map(veg =>
             `<div class="vegetable-tag" data-id="${veg.id}">${veg.name}</div>`
         ).join('');
 
@@ -611,8 +665,17 @@ function showSingleRecipeDetail(recipe) {
 
 // 返回函式
 function goBackToOverview() {
-    history.pushState({ page: 'overview' }, '', '/');
-    showSection('overview');
+    const currentSeason = document.querySelector('.season-filter-btn.active')?.dataset.season || 'all';
+    let newUrl = '/?section=overview';
+    if (currentSeason !== 'all') {
+        newUrl += `&season=${currentSeason}`;
+    }
+    history.pushState({ page: 'overview' }, '', newUrl);
+
+    // 新增：移除可能殘留的詳細頁面元素
+    document.getElementById('detailPage')?.remove();
+
+    showSection('overview', false);
 }
 
 function goBackToRecipes() {
@@ -642,9 +705,11 @@ function appendMessage(sender, message) {
 
 // 統一設置所有事件監聽器
 function setupEventListeners() {
-    menuToggle.addEventListener('click', () => {
-        sidebar.classList.toggle('active');
-    });
+    if (menuToggle) {
+        menuToggle.addEventListener('click', () => {
+            sidebar.classList.toggle('active');
+        });
+    }
 
     navItems.forEach(item => {
         item.addEventListener('click', function (event) {
@@ -656,30 +721,64 @@ function setupEventListeners() {
         });
     });
 
-    chatToggle.addEventListener('click', () => {
-        chatBody.classList.toggle('active');
-        if (chatBody.classList.contains('active')) {
-            chatInput.focus();
-        }
-    });
+    if (seasonFilterContainer) {
+        seasonFilterContainer.addEventListener('click', (event) => {
+            if (event.target.classList.contains('season-filter-btn')) {
+                const selectedSeason = event.target.dataset.season;
 
-    sendMessage.addEventListener('click', () => {
-        handleChatInput();
-    });
+                updateSeasonFilterButtons(selectedSeason);
 
-    chatInput.addEventListener('keypress', (e) => {
-        if (e.key === 'Enter') {
-            handleChatInput();
-        }
-    });
+                // 使用新季節篩選並更新全域 `vegetables` 變數
+                vegetables = filterBySeason(allVegetables, selectedSeason);
 
-    document.getElementById('recipeSearch')?.addEventListener('input', e => {
-        const term = e.target.value.toLowerCase();
-        document.querySelectorAll('#recipeGrid .recipe-card').forEach(card => {
-            const nameMatch = card.dataset.name.includes(term);
-            card.style.display = nameMatch ? 'flex' : 'none';
+                // 使用篩選後的資料重新渲染
+                renderVegetables();
+                renderPricePredictions();
+
+                // 更新 URL 以反映當前篩選狀態
+                let newUrl = `/?section=overview`;
+                if (selectedSeason !== 'all') {
+                    newUrl += `&season=${selectedSeason}`;
+                }
+                history.pushState({ section: 'overview', season: selectedSeason }, '', newUrl);
+            }
         });
-    });
+    }
+
+
+    if (chatToggle) {
+        chatToggle.addEventListener('click', () => {
+            chatBody.classList.toggle('active');
+            if (chatBody.classList.contains('active')) {
+                chatInput.focus();
+            }
+        });
+    }
+
+    if (sendMessage) {
+        sendMessage.addEventListener('click', () => {
+            handleChatInput();
+        });
+    }
+
+    if (chatInput) {
+        chatInput.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter') {
+                handleChatInput();
+            }
+        });
+    }
+
+    const recipeSearch = document.getElementById('recipeSearch');
+    if (recipeSearch) {
+        recipeSearch.addEventListener('input', e => {
+            const term = e.target.value.toLowerCase();
+            document.querySelectorAll('#recipeGrid .recipe-card').forEach(card => {
+                const nameMatch = card.dataset.name.includes(term);
+                card.style.display = nameMatch ? 'flex' : 'none';
+            });
+        });
+    }
 
     window.addEventListener('popstate', (event) => {
         if (event.state) {
@@ -690,6 +789,17 @@ function setupEventListeners() {
             }
         }
     });
+
+    // 處理圖片上傳按鈕的點擊事件
+    if (uploadBtn) {
+        uploadBtn.addEventListener('click', () => {
+            imageUpload.click(); // 模擬點擊文件選擇框
+        });
+    }
+    // 處理圖片上傳的change事件
+    if (imageUpload) {
+        imageUpload.addEventListener('change', handleImageUpload);
+    }
 }
 
 
