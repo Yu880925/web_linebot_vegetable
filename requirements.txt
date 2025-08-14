@@ -12,3 +12,4 @@ keras==3.10.0
 Pillow
 flask-cors
 psycopg2-binary
+pypinyin
