@@ -14,7 +14,7 @@ import psycopg2.extras # 為了使用 DictCursor
 import datetime # 為了取得當前月份
 from linebot.exceptions import InvalidSignatureError
 from linebot.v3.messaging import ApiClient, Configuration, MessagingApi
-from rec_veg.rec_veg import VegetablePredictor
+from rec_veg.rec_veg_new import rec_veg
 from nutri_rec.nutri_rec import (
     get_top_vegetables_by_nutrient,
     get_vegetables_by_name_or_alias,
@@ -78,9 +78,9 @@ handler.setFormatter(formatter)
 app.logger.addHandler(handler)
 
 
-app.logger.info("Attempting to import rec_veg...")
-from rec_veg.rec_veg import rec_veg
-app.logger.info("rec_veg imported successfully.")
+app.logger.info("Attempting to import rec_veg_new...")
+from rec_veg.rec_veg_new import rec_veg
+app.logger.info("rec_veg_new imported successfully.")
 import pandas as pd
 
 NUTRIENT_DISPLAY_MAPPING = {
@@ -1069,15 +1069,28 @@ def handle_image_message(event):
         veg_name = "未知蔬菜"
         confidence = 0.0
         try:
-            lines = recognition_result.split("\n")
-            if len(lines) >= 2:
-                if "預測類別：" in lines[0]:
-                    veg_name = lines[0].replace("預測類別：", "").strip()
-                if "信心度：" in lines[1]:
-                    confidence_str = (
-                        lines[1].replace("信心度：", "").replace("%", "").strip()
-                    )
-                    confidence = float(confidence_str) / 100.0
+            if isinstance(recognition_result, dict):
+                veg_name = recognition_result.get("prediction", veg_name)
+                conf_value = recognition_result.get("confidence", "")
+                if isinstance(conf_value, str):
+                    conf_value = conf_value.replace("%", "").strip()
+                    if conf_value:
+                        confidence = float(conf_value) / 100.0
+                elif isinstance(conf_value, (int, float)):
+                    confidence = conf_value / 100.0 if conf_value > 1 else float(conf_value)
+            elif isinstance(recognition_result, str):
+                lines = recognition_result.split("\n")
+                if len(lines) >= 2:
+                    if "預測類別：" in lines[0]:
+                        veg_name = lines[0].replace("預測類別：", "").strip()
+                    if "信心度：" in lines[1]:
+                        confidence_str = (
+                            lines[1].replace("信心度：", "").replace("%", "").strip()
+                        )
+                        confidence = float(confidence_str) / 100.0
+            else:
+                veg_name = "未知蔬菜"
+                confidence = 0.0
         except Exception as e:
             app.logger.error(f"解析 recognition_result 失敗: {e}")
             import traceback
@@ -1286,25 +1299,23 @@ def get_csv(filename):
         app.logger.error(f"MinIO 取檔失敗: {e}")
         return "Not found", 404
 
-try:
-    predictor = VegetablePredictor(
-        model_path="rec_veg/model_mnV2(best).keras", classes_path="rec_veg/classes.csv"
-    )
-except Exception as e:
-    print(f"無法啟動應用程式: {e}")
-    predictor = None
+# 已改用 rec_veg_new.rec_veg，移除舊模型初始化
+predictor = None
 
 @app.route("/predict", methods=["POST"])
 def handle_prediction():
-    if not predictor:
-        return jsonify({"error": "伺服器初始化失敗，模型未載入。"}), 500
     try:
         data = request.get_json()
         if not data or "image" not in data:
             return jsonify({"error": "請求格式錯誤，未包含 'image' 欄位"}), 400
         base64_image = data["image"]
-        prediction_result = predictor.predict(base64_image)
-        return jsonify(prediction_result)
+        prediction_result = rec_veg(base64_image)
+        if not prediction_result:
+            return jsonify({"error": "辨識失敗"}), 500
+        if isinstance(prediction_result, dict):
+            return jsonify(prediction_result)
+        else:
+            return jsonify({"result": prediction_result})
     except Exception as e:
         print(f"API 處理時發生錯誤: {e}")
         return jsonify({"error": "伺服器內部錯誤，無法辨識圖片"}), 500
