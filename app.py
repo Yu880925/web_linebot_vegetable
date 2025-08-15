@@ -1560,6 +1560,8 @@ def handle_text_message(event):
             recommendation_result = get_top_vegetables_by_nutrient(nutrient_input)
             print(f"DEBUG: Recommendation result for '{nutrient_input}': {recommendation_result}")
             
+            reply_messages = [] # 使用一個列表來收集所有要回覆的訊息
+            
             if recommendation_result and isinstance(recommendation_result, list):
                 valid_vegetables = []
                 for veg in recommendation_result:
@@ -1570,34 +1572,30 @@ def handle_text_message(event):
                         valid_vegetables.append(temp_veg)
                 
                 if valid_vegetables:
-                    # 檢查是否有多個營養成分（需要分組顯示）
-                    nutrient_names = set()
-                    for veg in valid_vegetables:
-                        if 'nutrient_name' in veg:
-                            nutrient_names.add(veg['nutrient_name'])
+                    nutrient_names = sorted(list(set(veg['nutrient_name'] for veg in valid_vegetables if 'nutrient_name' in veg)))
                     
-                    if len(nutrient_names) > 1:
-                        # 多個營養成分：使用分組顯示
-                        reply_message = _create_grouped_nutrient_flex_message(
-                            valid_vegetables,
-                            f"為您推薦 {nutrient_input} 含量最高的蔬菜"
-                        )
-                    else:
-                        # 單一營養成分：使用原本的顯示方式
-                        reply_message = _create_vegetable_flex_message(
-                            valid_vegetables,
-                            f"為您推薦 {nutrient_input} 含量最高的蔬菜",
-                            is_nutrient_search=True,
-                        )
-                else:
-                    print(f"DEBUG: No valid data found for '{nutrient_input}' after filtering.")
-            
-            if not reply_message:
-                # 這裡的調用已移除 MinIO 檔案名稱參數
+                    # _create_grouped_nutrient_flex_message 現在會回傳一個訊息列表
+                    grouped_messages = _create_grouped_nutrient_flex_message(
+                        valid_vegetables,
+                        f"為您推薦 {nutrient_input} 含量最高的蔬菜"
+                    )
+
+                    if grouped_messages:
+                        # 如果有多個營養素，加入引導文字
+                        if len(nutrient_names) > 1:
+                            intro_text = f"菜菜子分別為您查詢了「{', '.join(nutrient_names)}」的結果："
+                            reply_messages.append(TextMessage(text=intro_text))
+                        
+                        # 將所有獨立的 FlexMessage 加入待回覆列表
+                        reply_messages.extend(grouped_messages)
+
+            # 如果經過營養素查詢後沒有任何結果，才嘗試用蔬菜名稱搜尋
+            if not reply_messages:
                 vegetable_search_result = get_vegetables_by_name_or_alias(nutrient_input)
                 print(f"DEBUG: Vegetable search result for '{nutrient_input}': {vegetable_search_result}")
 
                 if vegetable_search_result and isinstance(vegetable_search_result, list):
+                    # ... (這部分的邏輯和原先類似，但確保結果被加到 reply_messages 列表中)
                     limited_vegetable_search_result = vegetable_search_result[:12]
                     valid_vegetables = []
                     for veg in limited_vegetable_search_result:
@@ -1608,22 +1606,24 @@ def handle_text_message(event):
                             valid_vegetables.append(temp_veg)
 
                     if valid_vegetables:
-                        reply_message = _create_vegetable_flex_message(
+                        single_flex_message = _create_vegetable_flex_message(
                             valid_vegetables,
                             f"為您推薦 {nutrient_input} 相關蔬菜",
                             is_nutrient_search=True,
                         )
-                    else:
-                        print(f"DEBUG: No valid data found for '{nutrient_input}' after filtering.")
-            
-            if not reply_message:
-                reply_message = TextMessage(text="沒有找到符合條件的營養成分或蔬菜。請檢查您的輸入。")
+                        if single_flex_message:
+                            reply_messages.append(single_flex_message)
 
-        if reply_message:
+            # 最後，根據 reply_messages 的內容來決定如何回覆
+            if not reply_messages:
+                reply_messages.append(TextMessage(text="沒有找到符合條件的營養成分或蔬菜。請檢查您的輸入。"))
+
+            # 發送回覆
             messaging_api.reply_message(
-                ReplyMessageRequest(reply_token=event.reply_token, messages=[reply_message])
+                ReplyMessageRequest(reply_token=event.reply_token, messages=reply_messages)
             )
             print("Reply sent successfully.")
+            return 
 
     except Exception as e:
         print(f"Failed to reply: {e}")
@@ -1845,11 +1845,12 @@ def get_recent_price_info(veg_id):
 
 def _create_grouped_nutrient_flex_message(veg_data_list, alt_text_prefix):
     """
-    為營養成分查詢創建分組的 Flex 訊息，每個營養成分類型顯示為一個獨立的 carousel
+    為營養成分查詢創建分組的 Flex 訊息。
+    現在回傳一個 FlexMessage 的列表，每個營養成分一個。
     """
     if not veg_data_list:
         return None
-    
+
     # 按營養成分名稱分組
     grouped_by_nutrient = {}
     for veg_data in veg_data_list:
@@ -1857,31 +1858,25 @@ def _create_grouped_nutrient_flex_message(veg_data_list, alt_text_prefix):
         if nutrient_name not in grouped_by_nutrient:
             grouped_by_nutrient[nutrient_name] = []
         grouped_by_nutrient[nutrient_name].append(veg_data)
-    
-    # 如果只有一個營養成分，使用原本的單一 carousel
+
+    # 如果只有一個營養成分，為了保持一致性，也回傳一個包含單一元素的列表
     if len(grouped_by_nutrient) == 1:
-        return _create_vegetable_flex_message(veg_data_list, alt_text_prefix, is_nutrient_search=True)
-    
-    # 多個營養成分：創建多個 carousel 並合併
-    all_bubbles = []
+        single_message = _create_vegetable_flex_message(veg_data_list, alt_text_prefix, is_nutrient_search=True)
+        return [single_message] if single_message else []
+
+    # 多個營養成分：為每個營養素創建一個獨立的 FlexMessage
+    all_flex_messages = []
     for nutrient_name, nutrient_veg_list in grouped_by_nutrient.items():
         # 為每個營養成分創建一個 carousel
         nutrient_carousel = _create_vegetable_flex_message(
-            nutrient_veg_list, 
-            f"{alt_text_prefix} - {nutrient_name}", 
+            nutrient_veg_list,
+            f"富含「{nutrient_name}」的蔬菜",
             is_nutrient_search=True
         )
-        if nutrient_carousel and hasattr(nutrient_carousel, 'contents') and hasattr(nutrient_carousel.contents, 'contents'):
-            # 提取 carousel 中的 bubbles
-            all_bubbles.extend(nutrient_carousel.contents.contents)
-    
-    if all_bubbles:
-        return FlexMessage(
-            alt_text=f"{alt_text_prefix} - 多種營養成分",
-            contents=FlexCarousel(contents=all_bubbles)
-        )
-    
-    return None
+        if nutrient_carousel and isinstance(nutrient_carousel, FlexMessage):
+            all_flex_messages.append(nutrient_carousel)
+
+    return all_flex_messages
 
 
 if __name__ == "__main__":

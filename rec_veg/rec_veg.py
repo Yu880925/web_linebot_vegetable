@@ -5,11 +5,12 @@ from tensorflow.keras.utils import load_img, img_to_array
 import tensorflow as tf
 import numpy as np
 import csv
-import os # 新增 os 模組
+import os 
+from tensorflow.keras.applications import efficientnet, mobilenet_v3
 
 # 載入模型
 current_dir = os.path.dirname(__file__)
-model_path = os.path.join(current_dir, 'model_mnV2(best).keras')
+model_path = os.path.join(current_dir, '1best_tuned_model.keras')
 model = load_model(model_path)
 
 def load_classes(csv_path='classes.csv'):
@@ -22,34 +23,61 @@ def load_classes(csv_path='classes.csv'):
 # 載入類別名稱
 classes = load_classes('classes.csv')
 
-def rec_veg(base64_string):
+def rec_veg(base64_string: str):
+    """
+    接收 Base64 編碼的圖片字串，進行解碼、預處理、預測，並回傳結果。
+    
+    Args:
+        base64_string (str): Base64 編碼的圖片字串。
+
+    Returns:
+        dict: 一個包含 'prediction' 和 'confidence' 的字典，如果出錯則回傳 None。
+    """
+    if not class_names:
+        print("❌ 類別名稱未載入，無法進行預測。")
+        return None
+
     try:
-        # 處理 base64 字串
+        # 處理 base64 字串，移除 data URI scheme (如果有的話)
         if base64_string.startswith("data:image"):
             base64_string = base64_string.split(",")[1]
+        
         image_bytes = base64.b64decode(base64_string)
         image_file = BytesIO(image_bytes)
-        print(image_file)
 
-        # 載入圖片並前處理
-        img = load_img(image_file, target_size=(128, 128))
-        img_array = img_to_array(img) / 255.0
-        img_array = tf.expand_dims(img_array, axis=0)
+        # 載入圖片並調整為模型需要的尺寸
+        # 修正: 從 (128, 128) 改為訓練時使用的 target_image_size
+        img = load_img(image_file, target_size=target_image_size)
+        
+        # 將圖片轉換為 numpy 陣列
+        img_array = img_to_array(img)
+        
+        # 擴展維度以符合模型輸入格式 (batch_size, height, width, channels)
+        img_array_expanded = np.expand_dims(img_array, axis=0)
+        
+        # *** 關鍵修正 ***
+        # 使用與訓練時完全相同的預處理函式
+        img_preprocessed = preprocessing_function(img_array_expanded)
 
-        # 預測
-        preds = model.predict(img_array)
-        pred_idx = tf.argmax(preds, axis=1).numpy()[0]
-        confidence = tf.reduce_max(preds).numpy() * 100
-
-        print(f"預測類別：{classes[pred_idx]}")
-        print(f"信心度：{confidence:.2f}%")
-
-        # 修改回傳值為元組 (蔬菜名稱, 信心度)
-        return f"預測類別：{classes[pred_idx]}\n信心度：{confidence:.2f}%"
+        # 進行預測
+        predictions = model.predict(img_preprocessed)
+        
+        # 解析預測結果
+        scores = predictions[0]
+        predicted_index = np.argmax(scores)
+        predicted_class = class_names[predicted_index]
+        confidence = np.max(scores) * 100
+        
+        result = {
+            "prediction": predicted_class,
+            "confidence": f"{confidence:.2f}%"
+        }
+        return result
 
     except Exception as e:
-        print(f"rec_veg 函數中發生錯誤: {e}")
-        return f"rec_veg 函數中發生錯誤: {e}"
+        print(f"❌ 預測過程中發生錯誤: {e}")
+        return None
+
 
 
 
@@ -76,15 +104,24 @@ class VegetablePredictor:
             print(f"錯誤：初始化 VegetablePredictor 失敗。請檢查檔案路徑。")
             raise e
 
-    def _load_classes(self, csv_path):
+    def load_classes(csv_path='classes_new.csv'):
         """
-        私有方法，從 CSV 檔案載入類別名稱。
+        從 CSV 檔案載入類別名稱。
+        修正: 從 row[1] 改為 row[0] 來讀取正確的欄位。
         """
-        with open(csv_path, "r", encoding="utf-8") as f:
-            reader = csv.reader(f)
-            # 假設 CSV 第一行是標頭 (id, name)，所以從第二行開始讀取
-            # 如果您的 CSV 沒有標頭，請將 [1:] 移除
-            return [row[1] for row in list(reader)]
+        try:
+            with open(csv_path, 'r', encoding='utf-8') as f:
+                reader = csv.reader(f)
+                # 假設每個類別名稱佔據一行中的第一欄
+                classes = [row[1] for row in reader]
+            print(f"✅ 成功從 '{csv_path}' 載入 {len(classes)} 個類別。")
+            return classes
+        except FileNotFoundError:
+            print(f"❌ 錯誤: 找不到類別檔案 '{csv_path}'。")
+            return []
+        except IndexError:
+            print(f"❌ 錯誤: CSV 檔案 '{csv_path}' 格式不正確，請確保每行至少有一欄。")
+            return []
 
     def predict(self, base64_string):
         """

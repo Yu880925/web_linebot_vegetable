@@ -130,7 +130,7 @@ def get_nutrient_columns_from_db(nutrient_name: str):
                 unique_matches[nutrition_en] = (candidate, score, match_type)
         
         # 按相似度排序，取前5個結果
-        sorted_matches = sorted(unique_matches.values(), key=lambda x: x[1], reverse=True)[:5]
+        sorted_matches = sorted(unique_matches.values(), key=lambda x: x[1], reverse=True)[:1]
         
         # 格式化結果
         results = []
@@ -263,68 +263,160 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
 
 
 def get_vegetables_by_name_or_alias(search_term: str, **kwargs):
+    """
+    根據蔬菜名稱或別名進行模糊搜尋，找出最相關的蔬菜。
+    使用 thefuzz 實現模糊匹配。
+    搜尋邏輯：
+    1. 先比對中文名稱 (basic_vege.vege_name)、常見別名、其他學名 (vege_alias)
+    2. 然後比對羅馬拼音 (vege_alias)
+    3. 最後比對錯字 (vege_alias)
+    回傳所有符合條件的蔬菜詳細資訊。
+    """
     conn = get_db_connection()
     if conn is None:
         return "錯誤：無法連接資料庫。"
 
     try:
         cursor = conn.cursor()
-        search_term_lower = f"%{search_term.strip()}%"
-        
-        # 1. 聯合查詢 basic_vege 和 vege_alias，找出匹配的 vege_id
-        query_vege_ids = """
-            SELECT DISTINCT id FROM basic_vege WHERE vege_name ILIKE %s
-            UNION
-            SELECT DISTINCT vege_id FROM vege_alias WHERE alias ILIKE %s;
+        clean_search_term = search_term.strip()
+
+        # --- 步驟 1: 獲取所有候選蔬菜資料 ---
+        query_candidates = """
+            SELECT id AS vege_id, vege_name AS alias, '中文名稱' AS type FROM basic_vege
+            UNION ALL
+            SELECT vege_id, alias, type FROM vege_alias;
         """
-        cursor.execute(query_vege_ids, (search_term_lower, search_term_lower))
-        matched_vege_ids = [row[0] for row in cursor.fetchall()]
+        cursor.execute(query_candidates)
+        all_aliases = cursor.fetchall()
+
+        if not all_aliases:
+            return [] # 資料庫為空
+
+        candidates = []
+        for vege_id, alias, type in all_aliases:
+            if alias: # 確保別名不為空
+                candidates.append({
+                    'vege_id': vege_id,
+                    'alias': alias.strip(),
+                    'type': type
+                })
+
+        # --- 步驟 2: 準備使用者輸入 (一般及拼音) ---
+        pinyin_search_term = "".join(
+            [item[0] for item in pinyin(clean_search_term, style=Style.NORMAL)]
+        )
+
+        # --- 步驟 3: 進行分層模糊搜尋 ---
+        # 3.1: 中文名稱、常見別名、其他學名
+        name_candidates = [c for c in candidates if c['type'] in ('中文名稱', '常見別名', '其他學名')]
+        name_texts = [c['alias'] for c in name_candidates]
+        name_matches_raw = process.extract(
+            clean_search_term,
+            name_texts,
+            scorer=fuzz.ratio,
+            limit=15
+        )
+        good_name_matches = []
+        for text, score in name_matches_raw:
+            if score >= 60:
+                # 一個別名可能對應多個 vege_id (雖然不太可能，但做個保護)
+                matching_candidates = [c for c in name_candidates if c['alias'] == text]
+                for mc in matching_candidates:
+                    good_name_matches.append((mc, score, 'name'))
+
+        # 3.2: 羅馬拼音
+        pinyin_candidates = [c for c in candidates if c['type'] == '羅馬拼音']
+        pinyin_texts = [c['alias'] for c in pinyin_candidates]
+        pinyin_matches_raw = process.extract(
+            pinyin_search_term,
+            pinyin_texts,
+            scorer=fuzz.ratio,
+            limit=10
+        )
+        pinyin_matches = []
+        for text, score in pinyin_matches_raw:
+             if score >= 60:
+                matching_candidates = [c for c in pinyin_candidates if c['alias'] == text]
+                for mc in matching_candidates:
+                    pinyin_matches.append((mc, score, 'pinyin'))
+
+        # 3.3: 錯字
+        typo_candidates = [c for c in candidates if c['type'] == '錯字']
+        typo_texts = [c['alias'] for c in typo_candidates]
+        typo_matches_raw = process.extract(
+            clean_search_term,
+            typo_texts,
+            scorer=fuzz.ratio,
+            limit=10
+        )
+        typo_matches = []
+        for text, score in typo_matches_raw:
+            if score >= 60:
+                matching_candidates = [c for c in typo_candidates if c['alias'] == text]
+                for mc in matching_candidates:
+                    typo_matches.append((mc, score, 'typo'))
+
+        # --- 步驟 4: 合併、去重、排序 ---
+        all_matches = good_name_matches + pinyin_matches + typo_matches
+
+        unique_matches = {}
+        for candidate, score, match_type in all_matches:
+            vege_id = candidate['vege_id']
+            # 如果 vege_id 不在 unique_matches 中，或者當前分數更高，則更新
+            if vege_id not in unique_matches or score > unique_matches[vege_id][1]:
+                unique_matches[vege_id] = (candidate, score, match_type)
+
+        sorted_matches = sorted(unique_matches.values(), key=lambda x: x[1], reverse=True)[:1]
+        
+        matched_vege_ids = [match[0]['vege_id'] for match in sorted_matches]
 
         if not matched_vege_ids:
             return []
 
+        # --- 步驟 5: 獲取匹配蔬菜的詳細資訊 ---
         results_list = []
-        for vege_id in matched_vege_ids:
-            # 2. 針對每個 vege_id 獲取詳細資訊
-            query_detail = """
-                SELECT * FROM basic_vege WHERE id = %s;
-            """
-            cursor.execute(query_detail, (vege_id,))
-            basic_vege_row = cursor.fetchone()
-            if not basic_vege_row:
-                continue
-            
-            basic_vege_cols = [desc[0] for desc in cursor.description]
-            basic_vege_dict = dict(zip(basic_vege_cols, basic_vege_row))
-            chinese_name = basic_vege_dict.get('vege_name')
+        # 使用 IN 子句一次性獲取所有需要的資料，提高效率
+        # 獲取基本資訊
+        query_basic = "SELECT id, vege_name FROM basic_vege WHERE id = ANY(%s);"
+        cursor.execute(query_basic, (matched_vege_ids,))
+        basic_vege_rows = cursor.fetchall()
+        vege_details = {row[0]: {'chinese_name': row[1]} for row in basic_vege_rows}
 
-            query_nutrition = """
-                SELECT * FROM vege_nutrition WHERE vege_id = %s;
-            """
-            cursor.execute(query_nutrition, (vege_id,))
-            nutrition_row = cursor.fetchone()
-            nutrition_cols = [desc[0] for desc in cursor.description]
-            nutrition_dict = dict(zip(nutrition_cols, nutrition_row)) if nutrition_row else {}
+        # 獲取營養資訊
+        query_nutrition = "SELECT * FROM vege_nutrition WHERE vege_id = ANY(%s);"
+        cursor.execute(query_nutrition, (matched_vege_ids,))
+        nutrition_cols = [desc[0] for desc in cursor.description]
+        nutrition_rows = cursor.fetchall()
+        for row in nutrition_rows:
+            row_dict = dict(zip(nutrition_cols, row))
+            veg_id = row_dict['vege_id']
+            if veg_id in vege_details:
+                vege_details[veg_id]['all_nutrients'] = {k: v for k, v in row_dict.items() if k != 'vege_id'}
 
-            query_aliases = """
-                SELECT alias FROM vege_alias WHERE vege_id = %s AND type NOT IN ('羅馬拼音', '錯字');
-            """
-            cursor.execute(query_aliases, (vege_id,))
-            aliases = [row[0] for row in cursor.fetchall()]
-            
-            # 合併營養數據，並去除重複的 vege_id 欄位
-            all_nutrients = {k: v for k, v in nutrition_dict.items() if k != 'vege_id'}
-            
-            results_list.append({
-                'id': vege_id,
-                'chinese_name': chinese_name,
-                'aliases': aliases,
-                'all_nutrients': all_nutrients,
-                'nutrient_name': "總覽",
-                'nutrient_value': None,
-                'unit': ""
-            })
+        # 獲取別名資訊
+        query_aliases = "SELECT vege_id, alias FROM vege_alias WHERE vege_id = ANY(%s) AND type NOT IN ('羅馬拼音', '錯字');"
+        cursor.execute(query_aliases, (matched_vege_ids,))
+        alias_rows = cursor.fetchall()
+        for vege_id, alias in alias_rows:
+            if vege_id in vege_details:
+                if 'aliases' not in vege_details[vege_id]:
+                    vege_details[vege_id]['aliases'] = []
+                vege_details[vege_id]['aliases'].append(alias)
         
+        # 組合最終結果，並按照模糊搜尋的分數排序
+        for vege_id in matched_vege_ids: # 按照排序後的 id 順序來組合
+            if vege_id in vege_details:
+                detail = vege_details[vege_id]
+                results_list.append({
+                    'id': vege_id,
+                    'chinese_name': detail.get('chinese_name', f"未知蔬菜 (ID: {vege_id})"),
+                    'aliases': detail.get('aliases', []),
+                    'all_nutrients': detail.get('all_nutrients', {}),
+                    'nutrient_name': "總覽",
+                    'nutrient_value': None,
+                    'unit': ""
+                })
+
         return results_list
     except Exception as e:
         print(f"Database query failed: {e}")
