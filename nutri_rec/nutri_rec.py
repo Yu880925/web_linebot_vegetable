@@ -5,6 +5,7 @@ import psycopg2
 from dotenv import load_dotenv
 import difflib # 引入 difflib 函式庫
 from pypinyin import pinyin, Style
+from thefuzz import fuzz, process
 
 load_dotenv()
 
@@ -22,6 +23,11 @@ def get_db_connection():
 def get_nutrient_columns_from_db(nutrient_name: str):
     """
     從資料庫的 nutrition_info 表格中，根據中文、拼音或別名進行模糊搜尋，
+    使用 thefuzz 實現更精確的模糊匹配。
+    搜尋邏輯：
+    1. 先中文比對 nutrition_zh
+    2. 然後比對拼音 pypinyin  
+    3. 最後再中文比對 alias
     回傳所有符合條件的英文欄位名稱和中文名稱。
     """
     conn = get_db_connection()
@@ -30,26 +36,107 @@ def get_nutrient_columns_from_db(nutrient_name: str):
 
     try:
         cursor = conn.cursor()
-        search_term_lower = nutrient_name.strip().lower()
+        search_term = nutrient_name.strip()
+        search_term_lower = search_term.lower()
         
-        query = """
-            SELECT DISTINCT nutrition_en, nutrition_zh
-            FROM nutrition_info
-            WHERE 
-                LOWER(nutrition_zh) LIKE %s OR 
-                LOWER(pypinyin) LIKE %s OR 
-                LOWER(alias) LIKE %s;
-        """
-        
-        # 嘗試將使用者輸入的中文轉換成拼音，以增加搜尋成功率
+        # 將使用者輸入轉換成拼音
         pinyin_search_term = "".join(
-            [item[0] for item in pinyin(search_term_lower, style=Style.NORMAL)]
+            [item[0] for item in pinyin(search_term, style=Style.NORMAL)]
         )
-        pinyin_search_term_with_wildcard = f"%{pinyin_search_term}%"
-
-        cursor.execute(query, (f"%{search_term_lower}%", pinyin_search_term_with_wildcard, f"%{search_term_lower}%"))
-        results = cursor.fetchall()
-
+        
+        # 獲取所有營養成分資料
+        query = """
+            SELECT DISTINCT nutrition_en, nutrition_zh, pypinyin, alias
+            FROM nutrition_info
+            WHERE nutrition_zh IS NOT NULL OR pypinyin IS NOT NULL OR alias IS NOT NULL;
+        """
+        cursor.execute(query)
+        all_nutrients = cursor.fetchall()
+        
+        if not all_nutrients:
+            return [], f"找不到營養成分資料。"
+        
+        # 準備搜尋候選清單
+        candidates = []
+        for row in all_nutrients:
+            nutrition_en, nutrition_zh, pypinyin_val, alias_val = row
+            candidates.append({
+                'nutrition_en': nutrition_en,
+                'nutrition_zh': nutrition_zh,
+                'pypinyin': pypinyin_val,
+                'alias': alias_val
+            })
+        
+        # 步驟1: 中文比對 nutrition_zh
+        zh_candidates = [c for c in candidates if c['nutrition_zh']]
+        zh_texts = [c['nutrition_zh'] for c in zh_candidates]
+        zh_matches = process.extract(
+            search_term, 
+            zh_texts, 
+            scorer=fuzz.ratio, 
+            limit=10
+        )
+        
+        # 篩選高相似度的結果 (相似度 >= 60)
+        good_zh_matches = []
+        for text, score in zh_matches:
+            if score >= 60:
+                matching_candidate = next(c for c in zh_candidates if c['nutrition_zh'] == text)
+                good_zh_matches.append((matching_candidate, score, 'zh'))
+        
+        # 如果中文比對結果不夠好，進行步驟2: 拼音比對
+        pinyin_matches = []
+        if len(good_zh_matches) < 3:  # 如果中文匹配結果少於3個
+            pinyin_candidates = [c for c in candidates if c['pypinyin']]
+            pinyin_texts = [c['pypinyin'] for c in pinyin_candidates]
+            pinyin_matches_raw = process.extract(
+                pinyin_search_term, 
+                pinyin_texts, 
+                scorer=fuzz.ratio, 
+                limit=10
+            )
+            
+            # 篩選高相似度的拼音結果
+            for text, score in pinyin_matches_raw:
+                if score >= 60:
+                    matching_candidate = next(c for c in pinyin_candidates if c['pypinyin'] == text)
+                    pinyin_matches.append((matching_candidate, score, 'pinyin'))
+        
+        # 步驟3: 中文比對 alias
+        alias_matches = []
+        alias_candidates = [c for c in candidates if c['alias']]
+        alias_texts = [c['alias'] for c in alias_candidates]
+        alias_matches_raw = process.extract(
+            search_term, 
+            alias_texts, 
+            scorer=fuzz.ratio, 
+            limit=10
+        )
+        
+        # 篩選高相似度的別名結果
+        for text, score in alias_matches_raw:
+            if score >= 60:
+                matching_candidate = next(c for c in alias_candidates if c['alias'] == text)
+                alias_matches.append((matching_candidate, score, 'alias'))
+        
+        # 合併所有結果，去重並按相似度排序
+        all_matches = good_zh_matches + pinyin_matches + alias_matches
+        
+        # 去重：根據 nutrition_en 去重，保留最高分數的結果
+        unique_matches = {}
+        for candidate, score, match_type in all_matches:
+            nutrition_en = candidate['nutrition_en']
+            if nutrition_en not in unique_matches or score > unique_matches[nutrition_en][1]:
+                unique_matches[nutrition_en] = (candidate, score, match_type)
+        
+        # 按相似度排序，取前5個結果
+        sorted_matches = sorted(unique_matches.values(), key=lambda x: x[1], reverse=True)[:5]
+        
+        # 格式化結果
+        results = []
+        for candidate, score, match_type in sorted_matches:
+            results.append((candidate['nutrition_en'], candidate['nutrition_zh']))
+        
         if results:
             return results, None
         else:
@@ -66,7 +153,7 @@ def get_nutrient_columns_from_db(nutrient_name: str):
 def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
     """
     根據指定的營養成分名稱，從資料庫中找出含量最高的三項蔬菜。
-    此函式現可處理多個匹配的營養成分。
+    此函式現可處理多個匹配的營養成分，並按營養成分分組顯示結果。
     """
     # 使用正規表達式拆分輸入字串，分隔符為逗號、空格或頓號
     nutrient_queries = re.split(r'[,，\s]', nutrient_name)
@@ -81,7 +168,7 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
 
     try:
         cursor = conn.cursor()
-        final_results_list = []
+        grouped_results = {}  # 按營養成分分組的結果
 
         # 針對每一個拆分後的查詢詞進行處理
         for query_term in nutrient_queries:
@@ -95,6 +182,11 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
             # 針對每一個匹配的營養成分，都進行一次查詢
             for actual_nutrient_column, found_nutrient_name in nutrient_matches:
                 print(f"DEBUG: 正在查詢營養成分: {found_nutrient_name}")
+                
+                # 如果這個營養成分已經處理過，跳過
+                if found_nutrient_name in grouped_results:
+                    continue
+                
                 # 1. 查詢 vege_nutrition，找出該營養成分含量最高的三項
                 query_nutrition = f"""
                     SELECT vege_id, {actual_nutrient_column}, *
@@ -128,7 +220,8 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
                         vege_id_to_aliases[vege_id] = []
                     vege_id_to_aliases[vege_id].append(alias)
 
-                # 3. 格式化結果並添加到最終列表
+                # 3. 格式化結果並按營養成分分組
+                nutrient_results = []
                 for row in nutrition_rows:
                     row_dict = dict(zip(col_names, row))
                     veg_id = row_dict['vege_id']
@@ -139,7 +232,7 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
 
                     all_nutrients_data = {k: v for k, v in row_dict.items() if k != 'vege_id'}
 
-                    final_results_list.append({
+                    nutrient_results.append({
                         "id": veg_id,
                         "chinese_name": chinese_name,
                         "nutrient_name": found_nutrient_name,
@@ -148,9 +241,17 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
                         "aliases": aliases,
                         "all_nutrients": all_nutrients_data
                     })
+                
+                # 將結果按營養成分名稱分組
+                grouped_results[found_nutrient_name] = nutrient_results
 
-        if not final_results_list:
+        if not grouped_results:
             return f"找不到與 '{nutrient_name}' 相關的有效數據。"
+        
+        # 將分組結果轉換為列表格式，保持向後相容性
+        final_results_list = []
+        for nutrient_name, results in grouped_results.items():
+            final_results_list.extend(results)
         
         return final_results_list
     except Exception as e:
