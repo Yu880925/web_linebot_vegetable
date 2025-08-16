@@ -153,7 +153,6 @@ def get_nutrient_columns_from_db(nutrient_name: str):
             if nutrition_en not in unique_matches or score > unique_matches[nutrition_en][1]:
                 unique_matches[nutrition_en] = (candidate, score, match_type)
         
-        # 按相似度排序，取前3個結果（增加回傳數量）
         sorted_matches = sorted(unique_matches.values(), key=lambda x: x[1], reverse=True)[:1]
         
         print(f"DEBUG: 最終匹配結果:")
@@ -182,7 +181,146 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
     """
     根據指定的營養成分名稱，從資料庫中找出含量最高的三項蔬菜。
     此函式現可處理多個匹配的營養成分，並按營養成分分組顯示結果。
+    也可以處理包含蔬菜名稱和營養素的複合查詢，如"高麗菜 蛋白質"。
     """
+    # 檢查是否為複合查詢（包含蔬菜名稱和營養素）
+    # 常見的營養素關鍵字（按長度排序，確保長詞優先匹配）
+    nutrient_keywords = ["碳水化合物", "維生素", "礦物質", "蛋白質", "脂肪", "纖維", "葉酸", "熱量", "calories", "protein", "fat", "carb", "fiber", "vitamin", "mineral", "鈣", "鐵", "鋅", "鉀", "鈉", "鎂", "磷", "糖", "水"]
+    
+    # 檢查輸入是否包含營養素關鍵字
+    contains_nutrient = any(keyword in nutrient_name for keyword in nutrient_keywords)
+    
+    if contains_nutrient:
+        # 複合查詢：嘗試分離蔬菜名稱和營養素
+        # 先嘗試按空格分割
+        words = nutrient_name.split()
+        if len(words) >= 2:
+            # 嘗試識別蔬菜名稱和營養素
+            # 先嘗試第一個詞作為蔬菜名稱
+            veg_name = words[0]
+            nutrient_part = " ".join(words[1:])
+            
+            # 先嘗試用蔬菜名稱查詢
+            veg_result = get_vegetables_by_name_or_alias(veg_name)
+            if veg_result and isinstance(veg_result, list) and len(veg_result) > 0:
+                # 找到蔬菜，現在需要查詢該蔬菜的特定營養素資訊
+                # 嘗試從營養素部分獲取營養素資訊
+                nutrient_matches, _ = get_nutrient_columns_from_db(nutrient_part)
+                if nutrient_matches:
+                    # 找到匹配的營養素，更新蔬菜資訊
+                    actual_nutrient_column, found_nutrient_name = nutrient_matches[0]
+                    
+                    # 查詢該蔬菜的特定營養素數值
+                    conn = get_db_connection()
+                    if conn:
+                        try:
+                            cursor = conn.cursor()
+                            veg_id = veg_result[0]['id']
+                            query = f"SELECT {actual_nutrient_column} FROM vege_nutrition WHERE vege_id = %s"
+                            cursor.execute(query, (veg_id,))
+                            result = cursor.fetchone()
+                            if result and result[0] is not None:
+                                nutrient_value = result[0]
+                                unit = actual_nutrient_column.split('_')[-1] if '_' in actual_nutrient_column else ''
+                                
+                                # 更新蔬菜資訊
+                                for veg in veg_result:
+                                    veg['nutrient_name'] = found_nutrient_name
+                                    veg['nutrient_value'] = nutrient_value
+                                    veg['unit'] = unit
+                        except Exception as e:
+                            print(f"Error querying specific nutrient: {e}")
+                        finally:
+                            conn.close()
+                
+                return veg_result
+            
+            # 如果第一個詞不是蔬菜名稱，嘗試最後一個詞作為營養素
+            if len(words) >= 2:
+                veg_name = " ".join(words[:-1])
+                nutrient_part = words[-1]
+                
+                veg_result = get_vegetables_by_name_or_alias(veg_name)
+                if veg_result and isinstance(veg_result, list) and len(veg_result) > 0:
+                    # 找到蔬菜，現在需要查詢該蔬菜的特定營養素資訊
+                    # 嘗試從營養素部分獲取營養素資訊
+                    nutrient_matches, _ = get_nutrient_columns_from_db(nutrient_part)
+                    if nutrient_matches:
+                        # 找到匹配的營養素，更新蔬菜資訊
+                        actual_nutrient_column, found_nutrient_name = nutrient_matches[0]
+                        
+                        # 查詢該蔬菜的特定營養素數值
+                        conn = get_db_connection()
+                        if conn:
+                            try:
+                                cursor = conn.cursor()
+                                veg_id = veg_result[0]['id']
+                                query = f"SELECT {actual_nutrient_column} FROM vege_nutrition WHERE vege_id = %s"
+                                cursor.execute(query, (veg_id,))
+                                result = cursor.fetchone()
+                                if result and result[0] is not None:
+                                    nutrient_value = result[0]
+                                    unit = actual_nutrient_column.split('_')[-1] if '_' in actual_nutrient_column else ''
+                                    
+                                    # 更新蔬菜資訊
+                                    for veg in veg_result:
+                                        veg['nutrient_name'] = found_nutrient_name
+                                        veg['nutrient_value'] = nutrient_value
+                                        veg['unit'] = unit
+                            except Exception as e:
+                                print(f"Error querying specific nutrient: {e}")
+                            finally:
+                                conn.close()
+                    
+                    return veg_result
+        
+        # 如果按空格分割沒有結果，嘗試處理沒有空格的複合查詢
+        # 例如："高麗菜蛋白質"
+        if len(words) < 2:
+            # 嘗試從營養素關鍵字中找出最長匹配的營養素
+            longest_nutrient = ""
+            for keyword in nutrient_keywords:
+                if keyword in nutrient_name and len(keyword) > len(longest_nutrient):
+                    longest_nutrient = keyword
+            
+            if longest_nutrient:
+                # 移除營養素部分，剩下的就是蔬菜名稱
+                veg_name = nutrient_name.replace(longest_nutrient, "").strip()
+                if veg_name:
+                    veg_result = get_vegetables_by_name_or_alias(veg_name)
+                    if veg_result and isinstance(veg_result, list) and len(veg_result) > 0:
+                        # 找到蔬菜，查詢該蔬菜的特定營養素資訊
+                        nutrient_matches, _ = get_nutrient_columns_from_db(longest_nutrient)
+                        if nutrient_matches:
+                            actual_nutrient_column, found_nutrient_name = nutrient_matches[0]
+                            
+                            # 查詢該蔬菜的特定營養素數值
+                            conn = get_db_connection()
+                            if conn:
+                                try:
+                                    cursor = conn.cursor()
+                                    veg_id = veg_result[0]['id']
+                                    query = f"SELECT {actual_nutrient_column} FROM vege_nutrition WHERE vege_id = %s"
+                                    cursor.execute(query, (veg_id,))
+                                    result = cursor.fetchone()
+                                    if result and result[0] is not None:
+                                        nutrient_value = result[0]
+                                        unit = actual_nutrient_column.split('_')[-1] if '_' in actual_nutrient_column else ''
+                                        
+                                        # 更新蔬菜資訊
+                                        for veg in veg_result:
+                                            veg['nutrient_name'] = found_nutrient_name
+                                            veg['nutrient_value'] = nutrient_value
+                                            veg['unit'] = unit
+                                except Exception as e:
+                                    print(f"Error querying specific nutrient: {e}")
+                                finally:
+                                    conn.close()
+                        
+                        return veg_result
+        
+        # 如果複合查詢處理失敗，繼續原有的營養素查詢邏輯
+    
     # 使用正規表達式拆分輸入字串，分隔符為逗號、空格或頓號
     nutrient_queries = re.split(r'[,，\s]', nutrient_name)
     nutrient_queries = [q.strip() for q in nutrient_queries if q.strip()]
