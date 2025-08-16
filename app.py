@@ -1403,16 +1403,22 @@ def try_handle_price_text_query(text):
                 return msgs
 
         # 單純名稱 => 若可解析為蔬菜，回覆價格資訊
+        # 但需要排除包含營養素名稱的情況
         resolved = resolve_veg_name_to_id_and_name(raw)
         if resolved and all(k not in raw for k in ["有比", "哪個便宜", "哪個比較便宜"]):
-            vid, _ = resolved
-            info = get_recent_price_info(vid)
-            if info:
-                flex = create_price_flex_message(info)
-                msgs = [TextMessage(text="菜菜子找到了相關的蔬菜價格資訊給你！")]
-                if flex:
-                    msgs.append(flex)
-                return msgs
+            # 檢查是否包含營養素相關關鍵字，如果包含則不進行價格查詢
+            nutrient_keywords = ["蛋白質", "脂肪", "碳水化合物", "纖維", "維生素", "礦物質", "鈣", "鐵", "鋅", "鉀", "鈉", "鎂", "磷", "葉酸", "熱量", "糖", "水"]
+            contains_nutrient = any(keyword in raw for keyword in nutrient_keywords)
+            
+            if not contains_nutrient:
+                vid, _ = resolved
+                info = get_recent_price_info(vid)
+                if info:
+                    flex = create_price_flex_message(info)
+                    msgs = [TextMessage(text="菜菜子找到了相關的蔬菜價格資訊給你！")]
+                    if flex:
+                        msgs.append(flex)
+                    return msgs
 
         # 二者比較：(.+?)有比(.+?)貴嗎
         m = re.search(r"^\s*(.+?)\s*有比\s*(.+?)\s*貴嗎\s*\?*$", raw)
@@ -1572,22 +1578,37 @@ def handle_text_message(event):
                         valid_vegetables.append(temp_veg)
                 
                 if valid_vegetables:
-                    nutrient_names = sorted(list(set(veg['nutrient_name'] for veg in valid_vegetables if 'nutrient_name' in veg)))
+                    # 檢查是否為複合查詢（包含蔬菜名稱和營養素）
+                    nutrient_keywords = ["蛋白質", "脂肪", "碳水化合物", "纖維", "維生素", "礦物質", "鈣", "鐵", "鋅", "鉀", "鈉", "鎂", "磷", "葉酸", "熱量", "糖", "水", "營養", "成分", "含量"]
+                    contains_nutrient = any(keyword in nutrient_input for keyword in nutrient_keywords)
                     
-                    # _create_grouped_nutrient_flex_message 現在會回傳一個訊息列表
-                    grouped_messages = _create_grouped_nutrient_flex_message(
-                        valid_vegetables,
-                        f"為您推薦 {nutrient_input} 含量最高的蔬菜"
-                    )
-
-                    if grouped_messages:
-                        # 如果有多個營養素，加入引導文字
-                        if len(nutrient_names) > 1:
-                            intro_text = f"菜菜子分別為您查詢了「{', '.join(nutrient_names)}」的結果："
-                            reply_messages.append(TextMessage(text=intro_text))
+                    if contains_nutrient and len(valid_vegetables) == 1:
+                        # 複合查詢：顯示單一蔬菜的營養資訊卡片
+                        single_flex_message = _create_vegetable_flex_message(
+                            valid_vegetables,
+                            f"「{valid_vegetables[0]['chinese_name']}」的營養資訊",
+                            is_nutrient_search=True,
+                        )
+                        if single_flex_message:
+                            reply_messages.append(single_flex_message)
+                    else:
+                        # 一般營養素查詢：顯示多個蔬菜的營養資訊
+                        nutrient_names = sorted(list(set(veg['nutrient_name'] for veg in valid_vegetables if 'nutrient_name' in veg)))
                         
-                        # 將所有獨立的 FlexMessage 加入待回覆列表
-                        reply_messages.extend(grouped_messages)
+                        # _create_grouped_nutrient_flex_message 現在會回傳一個訊息列表
+                        grouped_messages = _create_grouped_nutrient_flex_message(
+                            valid_vegetables,
+                            f"為您推薦 {nutrient_input} 含量最高的蔬菜"
+                        )
+
+                        if grouped_messages:
+                            # 如果有多個營養素，加入引導文字
+                            if len(nutrient_names) > 1:
+                                intro_text = f"菜菜子分別為您查詢了「{', '.join(nutrient_names)}」的結果："
+                                reply_messages.append(TextMessage(text=intro_text))
+                            
+                            # 將所有獨立的 FlexMessage 加入待回覆列表
+                            reply_messages.extend(grouped_messages)
 
             # 如果經過營養素查詢後沒有任何結果，才嘗試用蔬菜名稱搜尋
             if not reply_messages:
