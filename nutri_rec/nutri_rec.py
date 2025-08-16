@@ -53,8 +53,16 @@ def get_nutrient_columns_from_db(nutrient_name: str):
         cursor.execute(query)
         all_nutrients = cursor.fetchall()
         
+        print(f"DEBUG: 從資料庫獲取到 {len(all_nutrients)} 筆營養成分資料")
+        
         if not all_nutrients:
             return [], f"找不到營養成分資料。"
+        
+        # 除錯：檢查是否有「蛋白質」相關的資料
+        protein_related = [row for row in all_nutrients if '蛋白' in str(row)]
+        print(f"DEBUG: 找到 {len(protein_related)} 筆包含「蛋白」的資料:")
+        for row in protein_related[:5]:  # 只顯示前5筆
+            print(f"  {row}")
         
         # 準備搜尋候選清單
         candidates = []
@@ -70,6 +78,14 @@ def get_nutrient_columns_from_db(nutrient_name: str):
         # 步驟1: 中文比對 nutrition_zh
         zh_candidates = [c for c in candidates if c['nutrition_zh']]
         zh_texts = [c['nutrition_zh'] for c in zh_candidates]
+        
+        # 除錯：檢查是否有完全匹配
+        exact_match = None
+        for candidate in zh_candidates:
+            if candidate['nutrition_zh'] == search_term:
+                exact_match = candidate
+                break
+        
         zh_matches = process.extract(
             search_term, 
             zh_texts, 
@@ -77,16 +93,24 @@ def get_nutrient_columns_from_db(nutrient_name: str):
             limit=10
         )
         
-        # 篩選高相似度的結果 (相似度 >= 60)
+        print(f"DEBUG: 搜尋詞 '{search_term}' 的中文匹配結果:")
+        for text, score in zh_matches:
+            print(f"  '{text}': {score}%")
+        
+        # 篩選高相似度的結果 (相似度 >= 50，降低門檻以獲得更多結果)
         good_zh_matches = []
         for text, score in zh_matches:
-            if score >= 60:
+            if score >= 50:
                 matching_candidate = next(c for c in zh_candidates if c['nutrition_zh'] == text)
                 good_zh_matches.append((matching_candidate, score, 'zh'))
         
+        # 如果有完全匹配，優先加入
+        if exact_match:
+            good_zh_matches.insert(0, (exact_match, 100, 'exact'))
+        
         # 如果中文比對結果不夠好，進行步驟2: 拼音比對
         pinyin_matches = []
-        if len(good_zh_matches) < 3:  # 如果中文匹配結果少於3個
+        if len(good_zh_matches) < 5:  # 如果中文匹配結果少於5個
             pinyin_candidates = [c for c in candidates if c['pypinyin']]
             pinyin_texts = [c['pypinyin'] for c in pinyin_candidates]
             pinyin_matches_raw = process.extract(
@@ -98,7 +122,7 @@ def get_nutrient_columns_from_db(nutrient_name: str):
             
             # 篩選高相似度的拼音結果
             for text, score in pinyin_matches_raw:
-                if score >= 60:
+                if score >= 50:
                     matching_candidate = next(c for c in pinyin_candidates if c['pypinyin'] == text)
                     pinyin_matches.append((matching_candidate, score, 'pinyin'))
         
@@ -115,7 +139,7 @@ def get_nutrient_columns_from_db(nutrient_name: str):
         
         # 篩選高相似度的別名結果
         for text, score in alias_matches_raw:
-            if score >= 60:
+            if score >= 50:
                 matching_candidate = next(c for c in alias_candidates if c['alias'] == text)
                 alias_matches.append((matching_candidate, score, 'alias'))
         
@@ -129,8 +153,12 @@ def get_nutrient_columns_from_db(nutrient_name: str):
             if nutrition_en not in unique_matches or score > unique_matches[nutrition_en][1]:
                 unique_matches[nutrition_en] = (candidate, score, match_type)
         
-        # 按相似度排序，取前5個結果
+        # 按相似度排序，取前3個結果（增加回傳數量）
         sorted_matches = sorted(unique_matches.values(), key=lambda x: x[1], reverse=True)[:1]
+        
+        print(f"DEBUG: 最終匹配結果:")
+        for candidate, score, match_type in sorted_matches:
+            print(f"  {candidate['nutrition_en']} ({candidate['nutrition_zh']}): {score}% [{match_type}]")
         
         # 格式化結果
         results = []

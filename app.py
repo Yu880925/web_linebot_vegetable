@@ -1379,97 +1379,97 @@ def get_current_price_by_name(name_query):
     return price_info, cname
 
 
+# app.py
+
 def try_handle_price_text_query(text):
-    """針對文字輸入嘗試處理價格相關查詢：
-    - 指定品項：『高麗菜多少錢』『高麗菜一斤賣多少』
-    - 二者比較：『A 有比 B 貴嗎』
-    - 多者比較：『A、B、C 哪個便宜』
-    - 單純名稱 或 『X 是什麼？』
-    回傳 (messages) 或 None
-    """
+    """針對文字輸入嘗試處理價格相關查詢，並回傳包含文字與 Flex 字卡的訊息列表"""
     try:
         raw = text.replace('？', '?').replace('！', '!').strip()
+        msgs = []
+        
+        # 模式1：A、B、C 哪個便宜 (多者比較)
+        if raw.endswith("哪個便宜") or raw.endswith("哪個比較便宜"):
+            items_part = raw.replace("哪個比較便宜", "").replace("哪個便宜", "").strip()
+            names = [s.strip() for s in re.split(r"[、,，\s]+", items_part) if s.strip()]
+            
+            if len(names) >= 2:
+                price_infos = []
+                for n in names:
+                    info, _ = get_current_price_by_name(n)
+                    if info and info.get('current_price') is not None:
+                        price_infos.append(info)
+                
+                if price_infos:
+                    price_infos.sort(key=lambda x: x['current_price'])
+                    cheapest_name = price_infos[0]['name']
+                    cheapest_price = price_infos[0]['current_price']
+                    
+                    detail = "、".join([f"{info['name']} ${info['current_price']:.1f}" for info in price_infos])
+                    summary_text = f"幫您比較了一下，目前是 {cheapest_name} 最便宜喔！\n\n各項價格(元/公斤)：\n{detail}"
+                    msgs.append(TextMessage(text=summary_text))
+                    
+                    flex_msg = create_multi_price_flex_carousel(price_infos, alt_text="蔬菜價格比較")
+                    if flex_msg:
+                        msgs.append(flex_msg)
+                    return msgs
+                else:
+                    return [TextMessage(text="沒有取得有效的價格資料，可能暫時沒有報價。")]
 
-        # 『X 是什麼？』 => 視為指定品項詢價
-        m_what = re.search(r"^\s*(.+?)\s*是什麼\s*\?*$", raw)
-        if m_what:
-            q_name = m_what.group(1).strip()
-            info, _ = get_current_price_by_name(q_name)
-            if info:
-                flex = create_price_flex_message(info)
-                msgs = [TextMessage(text="菜菜子找到了相關的蔬菜價格資訊給你！")]
-                if flex:
-                    msgs.append(flex)
-                return msgs
-
-        # 單純名稱 => 若可解析為蔬菜，回覆價格資訊
-        resolved = resolve_veg_name_to_id_and_name(raw)
-        if resolved and all(k not in raw for k in ["有比", "哪個便宜", "哪個比較便宜"]):
-            vid, _ = resolved
-            info = get_recent_price_info(vid)
-            if info:
-                flex = create_price_flex_message(info)
-                msgs = [TextMessage(text="菜菜子找到了相關的蔬菜價格資訊給你！")]
-                if flex:
-                    msgs.append(flex)
-                return msgs
-
-        # 二者比較：(.+?)有比(.+?)貴嗎
+        # 模式2：A 有比 B 貴嗎 (兩者比較)
         m = re.search(r"^\s*(.+?)\s*有比\s*(.+?)\s*貴嗎\s*\?*$", raw)
         if m:
             a_name = m.group(1).strip()
             b_name = m.group(2).strip()
             a_info, a_std = get_current_price_by_name(a_name)
             b_info, b_std = get_current_price_by_name(b_name)
-            if not a_info or not b_info or a_info.get('current_price') is None or b_info.get('current_price') is None:
-                return [TextMessage(text="抱歉，無法取得完整的價格資料，請稍後再試或換個品項比較。")]
-            a_price = a_info['current_price']
-            b_price = b_info['current_price']
-            if a_price > b_price:
-                ans = f"{a_std} 比 {b_std} 貴（{a_price:.1f} > {b_price:.1f} 元/公斤）"
-            elif a_price < b_price:
-                ans = f"{a_std} 沒有比 {b_std} 貴（{a_price:.1f} < {b_price:.1f} 元/公斤）"
-            else:
-                ans = f"{a_std} 與 {b_std} 價格差不多（{a_price:.1f} 元/公斤）"
-            return [TextMessage(text=ans)]
-
-        # 多者比較：『哪個便宜』包含多個品項，以 、 ， , 空白 分隔
-        if raw.endswith("哪個便宜") or raw.endswith("哪個比較便宜"):
-            # 把結尾移除後取前面品項字串
-            items_part = raw.replace("哪個比較便宜", "").replace("哪個便宜", "").strip()
-            # 嘗試用常見分隔符切分
-            names = [s.strip() for s in re.split(r"[、,，\s]+", items_part) if s.strip()]
-            names = [n for n in names if n]
-            if len(names) >= 2:
-                results = []
-                for n in names:
-                    info, std = get_current_price_by_name(n)
-                    if info and info.get('current_price') is not None:
-                        results.append((std, info['current_price']))
-                if len(results) >= 1:
-                    results.sort(key=lambda x: x[1])
-                    cheapest_name, cheapest_price = results[0]
-                    detail = "，".join([f"{nm} {pr:.1f}" for nm, pr in results])
-                    return [TextMessage(text=f"{cheapest_name} 最便宜（{cheapest_price:.1f} 元/公斤）。明細：{detail}")]
-                return [TextMessage(text="沒有取得有效的價格資料，可能暫時沒有報價。")]
-
-        # 指定品項詢價：包含『多少錢』『賣多少』『一斤』等關鍵字
-        if any(k in raw for k in ["多少錢", "賣多少", "一斤", "多少", "價格"]):
-            # 常見格式：『高麗菜多少錢』『高麗菜一斤賣多少』
-            # 取第一個詞作為品項（遇到空白或標點分隔）
-            name = re.split(r"[\s,，、?？!！]+", raw)[0].strip()
-            if name:
-                info, cname = get_current_price_by_name(name)
-                if info:
-                    flex = create_price_flex_message(info)
-                    msgs = [TextMessage(text="菜菜子找到了相關的蔬菜價格資訊給你！")]
-                    if flex:
-                        msgs.append(flex)
-                    return msgs
+            
+            if a_info and b_info and a_info.get('current_price') is not None and b_info.get('current_price') is not None:
+                a_price = a_info['current_price']
+                b_price = b_info['current_price']
+                
+                if a_price > b_price:
+                    ans = f"是的，{a_std} (${a_price:.1f}) 目前比 {b_std} (${b_price:.1f}) 貴一些。"
+                elif a_price < b_price:
+                    ans = f"沒有喔，{a_std} (${a_price:.1f}) 目前比 {b_std} (${b_price:.1f}) 便宜。"
                 else:
-                    return [TextMessage(text=f"找不到「{name}」的價格資訊，可能暫時沒有報價。")]
+                    ans = f"{a_std} 和 {b_std} 的價格差不多喔！ (都是 ${a_price:.1f})"
+                
+                msgs.append(TextMessage(text=ans))
+                flex_msg = create_multi_price_flex_carousel([a_info, b_info], alt_text=f"{a_std}與{b_std}的價格資訊")
+                if flex_msg:
+                    msgs.append(flex_msg)
+                return msgs
+            else:
+                return [TextMessage(text="抱歉，無法取得完整的價格資料，請稍後再試或換個品項比較。")]
 
-        return None
+        # 模式3：單一品項查詢 (包含 '多少錢', '價格', '是什麼', 或純名稱)
+        # 把所有單一品項的關鍵字判斷合併在一起
+        veg_name_to_search = None
+        if any(k in raw for k in ["多少錢", "賣多少", "一斤", "多少", "價格"]):
+            veg_name_to_search = re.split(r"[\s,，、?？!！]+", raw)[0].strip()
+        else:
+            m_what = re.search(r"^\s*(.+?)\s*是什麼\s*\?*$", raw)
+            if m_what:
+                veg_name_to_search = m_what.group(1).strip()
+            else:
+                # 檢查是否為單純的蔬菜名稱
+                resolved = resolve_veg_name_to_id_and_name(raw)
+                if resolved:
+                    veg_name_to_search = raw
+
+        if veg_name_to_search:
+            info, cname = get_current_price_by_name(veg_name_to_search)
+            if info:
+                msgs.append(TextMessage(text=f"菜菜子找到了「{cname}」的價格資訊給你參考！"))
+                # 使用新的通用函式，傳入一個元素的列表
+                flex_msg = create_multi_price_flex_carousel([info])
+                if flex_msg:
+                    msgs.append(flex_msg)
+                return msgs
+            else:
+                return [TextMessage(text=f"找不到「{veg_name_to_search}」的價格資訊，可能暫時沒有報價。")]
+
+        return None # 如果所有模式都不匹配，回傳 None
     except Exception as e:
         app.logger.error(f"try_handle_price_text_query error: {e}")
         return None
@@ -1562,7 +1562,8 @@ def handle_text_message(event):
             
             reply_messages = [] # 使用一個列表來收集所有要回覆的訊息
             
-            if recommendation_result and isinstance(recommendation_result, list):
+            # 檢查營養素搜尋結果
+            if recommendation_result and isinstance(recommendation_result, list) and len(recommendation_result) > 0:
                 valid_vegetables = []
                 for veg in recommendation_result:
                     if veg and (veg.get('id') or veg.get('vege_id')) and veg.get('chinese_name') and veg.get('all_nutrients'):
@@ -1589,30 +1590,35 @@ def handle_text_message(event):
                         # 將所有獨立的 FlexMessage 加入待回覆列表
                         reply_messages.extend(grouped_messages)
 
-            # 如果經過營養素查詢後沒有任何結果，才嘗試用蔬菜名稱搜尋
+            # 如果營養素搜尋沒有結果，檢查是否為錯誤訊息
             if not reply_messages:
-                vegetable_search_result = get_vegetables_by_name_or_alias(nutrient_input)
-                print(f"DEBUG: Vegetable search result for '{nutrient_input}': {vegetable_search_result}")
+                if isinstance(recommendation_result, str) and "錯誤" in recommendation_result:
+                    # 營養素搜尋失敗，給出明確的錯誤訊息
+                    reply_messages.append(TextMessage(text=f"營養素搜尋失敗：{recommendation_result}"))
+                else:
+                    # 如果沒有營養素結果，才嘗試用蔬菜名稱搜尋
+                    vegetable_search_result = get_vegetables_by_name_or_alias(nutrient_input)
+                    print(f"DEBUG: Vegetable search result for '{nutrient_input}': {vegetable_search_result}")
 
-                if vegetable_search_result and isinstance(vegetable_search_result, list):
-                    # ... (這部分的邏輯和原先類似，但確保結果被加到 reply_messages 列表中)
-                    limited_vegetable_search_result = vegetable_search_result[:12]
-                    valid_vegetables = []
-                    for veg in limited_vegetable_search_result:
-                        if veg and (veg.get('id') or veg.get('vege_id')) and veg.get('chinese_name') and veg.get('all_nutrients'):
-                            temp_veg = veg.copy()
-                            if 'vege_id' in temp_veg:
-                                temp_veg['id'] = temp_veg['vege_id']
-                            valid_vegetables.append(temp_veg)
+                    if vegetable_search_result and isinstance(vegetable_search_result, list):
+                        # ... (這部分的邏輯和原先類似，但確保結果被加到 reply_messages 列表中)
+                        limited_vegetable_search_result = vegetable_search_result[:12]
+                        valid_vegetables = []
+                        for veg in limited_vegetable_search_result:
+                            if veg and (veg.get('id') or veg.get('vege_id')) and veg.get('chinese_name') and veg.get('all_nutrients'):
+                                temp_veg = veg.copy()
+                                if 'vege_id' in temp_veg:
+                                    temp_veg['id'] = temp_veg['vege_id']
+                                valid_vegetables.append(temp_veg)
 
-                    if valid_vegetables:
-                        single_flex_message = _create_vegetable_flex_message(
-                            valid_vegetables,
-                            f"為您推薦 {nutrient_input} 相關蔬菜",
-                            is_nutrient_search=True,
-                        )
-                        if single_flex_message:
-                            reply_messages.append(single_flex_message)
+                        if valid_vegetables:
+                            single_flex_message = _create_vegetable_flex_message(
+                                valid_vegetables,
+                                f"為您推薦 {nutrient_input} 相關蔬菜",
+                                is_nutrient_search=True,
+                            )
+                            if single_flex_message:
+                                reply_messages.append(single_flex_message)
 
             # 最後，根據 reply_messages 的內容來決定如何回覆
             if not reply_messages:
@@ -1673,84 +1679,99 @@ def handle_prediction():
         return jsonify({"error": "伺服器內部錯誤，無法辨識圖片"}), 500
 
 
-def create_price_flex_message(price_info):
-	"""根據價格資訊建立 Flex 卡片"""
-	import urllib.parse
-	if not price_info:
-		return None
+# app.py
 
-	veg_id = price_info.get('id')
-	veg_name = price_info.get('name')
-	aliases = price_info.get('aliases', [])
-	current_price = price_info.get('current_price')
-	change_pct = price_info.get('predicted_change_pct')
-	trend = price_info.get('price_trend')
+def _create_price_bubble(price_info):
+    """
+    (內部輔助函式) 根據單一蔬菜的價格資訊，建立一個 FlexBubble。
+    這段程式碼是從舊的 create_price_flex_message 抽離出來的核心。
+    """
+    import urllib.parse
+    if not price_info:
+        return None
 
-	alias_text = f"別名：{', '.join(aliases)}" if aliases else "無主要別名"
-	if current_price is not None:
-		price_text = f"目前平均售價：{current_price:.1f} 元/公斤"
-	else:
-		price_text = "目前暫無平均報價"
+    veg_id = price_info.get('id')
+    veg_name = price_info.get('name')
+    aliases = price_info.get('aliases', [])
+    current_price = price_info.get('current_price')
+    change_pct = price_info.get('predicted_change_pct')
+    trend = price_info.get('price_trend')
 
-	if trend and change_pct is not None:
-		pred_text = f"未來一週漲跌預測：{trend} {'+' if change_pct >= 0 else ''}{change_pct:.2f}%"
-	else:
-		pred_text = "未來一週漲跌預測：暫無預測資料"
+    alias_text = f"別名：{', '.join(aliases)}" if aliases else "無主要別名"
+    if current_price is not None:
+        price_text = f"目前平均售價：{current_price:.1f} 元/公斤"
+    else:
+        price_text = "目前暫無平均報價"
 
-	flex_image_url = os.getenv("url_9000")
-	image_filename = urllib.parse.quote(f"{veg_name}.jpg")
-	image_url = f"{flex_image_url}/veg-data-bucket/images/{image_filename}"
+    if trend and change_pct is not None:
+        pred_text = f"未來一週漲跌預測：{trend} {'+' if change_pct >= 0 else ''}{change_pct:.2f}%"
+    else:
+        pred_text = "未來一週漲跌預測：暫無預測資料"
 
-	encoded_veg_name = urllib.parse.quote(veg_name)
+    flex_image_url = os.getenv("url_9000")
+    image_filename = urllib.parse.quote(f"{veg_name}.jpg")
+    image_url = f"{flex_image_url}/veg-data-bucket/images/{image_filename}"
+    encoded_veg_name = urllib.parse.quote(veg_name)
 
-	bubble = FlexBubble(
-		direction="ltr",
-		hero=FlexImage(
-			url=image_url,
-			size="full",
-			aspect_ratio="1.5:1",
-			aspect_mode="cover",
-			action=URIAction(uri=image_url, label="查看圖片"),
-		),
-		body=FlexBox(
-			layout="vertical",
-			contents=[
-				FlexText(text=veg_name, weight="bold", size="xl", wrap=True),
-				FlexText(text=alias_text, size="sm", color="#aaaaaa", wrap=True, margin="md"),
-				FlexText(text=price_text, size="sm", color="#555555", wrap=True, margin="md"),
-				FlexText(text=pred_text, size="sm", color="#555555", wrap=True, margin="sm"),
-			],
-		),
-		footer=FlexBox(
-			layout="vertical",
-			spacing="sm",
-			contents=[
-				FlexButton(
-					style="primary",
-					height="sm",
-					color="#00B900",
-					action=PostbackAction(
-						label=f"我想了解 {veg_name} 這個更多！",
-						data=f"action=show_more_options&veg_id={veg_id}&veg_name={encoded_veg_name}",
-						displayText=f"我想了解關於「{veg_name}」的更多資訊！",
-					),
-				),
-				FlexButton(
-					style="link",
-					height="sm",
-					action=MessageAction(
-						label="其他當季蔬菜推薦",
-						text="當季蔬菜",
-					),
-				),
-			],
-		),
-	)
+    return FlexBubble(
+        direction="ltr",
+        hero=FlexImage(
+            url=image_url, size="full", aspect_ratio="1.5:1", aspect_mode="cover",
+            action=URIAction(uri=image_url, label="查看圖片"),
+        ),
+        body=FlexBox(
+            layout="vertical",
+            contents=[
+                FlexText(text=veg_name, weight="bold", size="xl", wrap=True),
+                FlexText(text=alias_text, size="sm", color="#aaaaaa", wrap=True, margin="md"),
+                FlexText(text=price_text, size="sm", color="#555555", wrap=True, margin="md"),
+                FlexText(text=pred_text, size="sm", color="#555555", wrap=True, margin="sm"),
+            ],
+        ),
+        footer=FlexBox(
+            layout="vertical", spacing="sm",
+            contents=[
+                FlexButton(
+                    style="primary", height="sm", color="#00B900",
+                    action=PostbackAction(
+                        label=f"我想了解 {veg_name} 更多！",
+                        data=f"action=show_more_options&veg_id={veg_id}&veg_name={encoded_veg_name}",
+                        displayText=f"我想了解關於「{veg_name}」的更多資訊！",
+                    ),
+                ),
+                # <<< 在這裡將按鈕加回來 >>>
+                FlexButton(
+                    style="link",
+                    height="sm",
+                    action=MessageAction(
+                        label="其他當季蔬菜推薦",
+                        text="當季蔬菜",
+                    ),
+                ),
+            ],
+        ),
+    )
 
-	return FlexMessage(
-		alt_text="蔬菜價格資訊",
-		contents=FlexCarousel(contents=[bubble])
-	)
+def create_multi_price_flex_carousel(price_info_list, alt_text="蔬菜價格資訊"):
+    """
+    根據一個包含多個蔬菜價格資訊的列表，建立一個 Flex Carousel 訊息。
+    """
+    if not price_info_list:
+        return None
+
+    bubbles = []
+    for info in price_info_list:
+        bubble = _create_price_bubble(info)
+        if bubble:
+            bubbles.append(bubble)
+    
+    if not bubbles:
+        return None
+
+    return FlexMessage(
+        alt_text=alt_text,
+        contents=FlexCarousel(contents=bubbles)
+    )
 
 
 def get_recent_price_info(veg_id):
