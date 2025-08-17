@@ -51,8 +51,8 @@ from linebot.v3.webhooks.models import (
     TextMessageContent,
 )
 from linebot.v3.webhooks.models import PostbackEvent 
-import json 
 import re
+import traceback
 
 
 # 新增日誌以確認 rec_veg 模組載入
@@ -124,6 +124,65 @@ def get_db_connection():
     except Exception as e:
         app.logger.error(f"Database connection failed: {e}")
         return None
+
+
+import threading
+import json
+import time
+
+# ... (其他 import 和函式)
+
+def listen_for_notifications():
+    """
+    建立一個獨立的執行緒，持續監聽 PostgreSQL 的 NOTIFY 事件。
+    """
+    app.logger.info("Starting database listener thread...")
+    
+    # 使用一個獨立的資料庫連線來進行 LISTEN 操作
+    conn = None
+    try:
+        conn = get_db_connection()
+        if not conn:
+            app.logger.error("Failed to establish listener database connection.")
+            return
+
+        conn.autocommit = True
+        cur = conn.cursor()
+
+        # 開始監聽指定的 Channel
+        # 請將 'channel_name' 改為您在 PostgreSQL Trigger 中使用的名稱
+        cur.execute("LISTEN channel_name;")
+        app.logger.info("Listening for notifications on 'channel_name'...")
+
+        while True:
+            # 檢查是否有新的通知
+            conn.poll()
+            while conn.notifies:
+                # 取得通知
+                notify = conn.notifies.pop(0)
+                app.logger.info(f"Received notification: {notify.channel}, {notify.payload}")
+                
+                try:
+                    # 解析 payload，它通常是一個 JSON 字串
+                    notification_data = json.loads(notify.payload)
+                    handle_push_notification(notification_data)
+                except json.JSONDecodeError as e:
+                    app.logger.error(f"Error decoding JSON payload: {e}")
+                except Exception as e:
+                    app.logger.error(f"Error handling push notification: {e}")
+            
+            # 等待一小段時間再重新檢查，避免過度佔用 CPU
+            time.sleep(1)
+
+    except Exception as e:
+        app.logger.error(f"Listener thread encountered an error and will restart in 5 seconds: {e}")
+        # 在錯誤發生後，可以選擇重試或終止
+        time.sleep(5)
+        listen_for_notifications() # 簡單的重試機制
+    finally:
+        if conn:
+            conn.close()
+            app.logger.info("Database listener connection closed.")
 
 # MinIO 客戶端設定
 def get_minio_client():
@@ -1209,7 +1268,7 @@ def handle_postback(event):
             if not price_info:
                 raise ValueError("找不到價格資訊或資料不足")
 
-            flex_message = create_price_flex_message(price_info)
+            flex_message = _create_price_bubble(price_info)
             messages = [TextMessage(text="菜菜子找到了相關的蔬菜價格資訊給你！")]
             if flex_message:
                 messages.append(flex_message)
@@ -1474,10 +1533,45 @@ def try_handle_price_text_query(text):
         app.logger.error(f"try_handle_price_text_query error: {e}")
         return None
 
+
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     print(f"Received text: {event.message.text}")
     try:
+        # 新增: 取得並儲存使用者 userId 和 name 的邏輯 ---
+        user_id = event.source.user_id
+        user_name = None  # 預設為 None，如果取得失敗
+
+        # 呼叫 LINE Messaging API 來取得用戶個人資料
+        try:
+            profile = messaging_api.get_profile(user_id)
+            user_name = profile.display_name
+            print(f"Retrieved profile for user {user_id}: {user_name}")
+        except Exception as e: 
+            print(f"Error getting user profile: {e}")
+        
+        conn = None
+        try:
+            conn = get_db_connection()
+            cur = conn.cursor()
+
+            # 使用 ON CONFLICT DO NOTHING 避免重複儲存
+            insert_user_sql = """
+            INSERT INTO users (line_user_id, name)
+            VALUES (%s, %s)
+            ON CONFLICT (line_user_id) DO UPDATE SET name = EXCLUDED.name;
+            """
+            cur.execute(insert_user_sql, (user_id, user_name))
+            conn.commit()
+        except Exception as e:
+            # 這裡使用 app.logger.error 或是單純的 print 都行
+            print(f"Error saving user ID to database: {e}")
+        finally:
+            # 確保連線被關閉，無論是否發生錯誤
+            if conn:
+                cur.close()
+                conn.close()
+
         messages_to_reply = []
         text = event.message.text.strip()
 
@@ -1914,7 +2008,52 @@ def _create_grouped_nutrient_flex_message(veg_data_list, alt_text_prefix):
 
     return all_flex_messages
 
+# 新增: 處理推播邏輯的函式
+from linebot.v3.messaging import PushMessageRequest, TextMessage
+
+def handle_push_notification(data):
+    """
+    根據從資料庫收到的通知資料，發送 LINE 推播訊息。
+    """
+    # 這裡的邏輯需要根據您的資料庫 payload 來設計
+    # 假設您的 payload 包含 'user_id' 和 'message'
+    user_id = data.get('user_id')
+    push_message_text = data.get('message')
+
+    if not user_id or not push_message_text:
+        app.logger.error("Missing user_id or message in notification data.")
+        return
+
+    # 您也可以在這裡根據資料庫資料查詢更複雜的訊息內容
+    # 例如: 從資料庫查詢特定蔬菜的價格變動
+    
+    # 建立 LINE Bot 推播訊息
+    push_message_request = PushMessageRequest(
+        to=user_id,
+        messages=[TextMessage(text=push_message_text)]
+    )
+    
+    # 建立 Line Messaging API 客戶端
+    # 您檔案中已有這部分程式碼
+    # configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
+    # api_client = ApiClient(configuration)
+    # messaging_api = MessagingApi(api_client)
+
+    try:
+        # 發送推播訊息
+        messaging_api.push_message(push_message_request)
+        app.logger.info(f"Successfully sent push message to user {user_id}")
+    except Exception as e:
+        app.logger.error(f"Failed to send push message to user {user_id}: {e}")
+        app.logger.error(traceback.format_exc())
+
 
 if __name__ == "__main__":
+    # 啟動監聽執行緒
+    listener_thread = threading.Thread(target=listen_for_notifications)
+    listener_thread.daemon = True # 設定為 daemon 執行緒，讓它在主程式結束時自動終止
+    listener_thread.start()
+
+    # 啟動 Flask Web 伺服器
     port = int(os.environ.get("PORT", 5000))
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=port, threaded=True)
