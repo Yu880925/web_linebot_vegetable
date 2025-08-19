@@ -97,10 +97,10 @@ def get_nutrient_columns_from_db(nutrient_name: str):
         for text, score in zh_matches:
             print(f"  '{text}': {score}%")
         
-        # 篩選高相似度的結果 (相似度 >= 50，降低門檻以獲得更多結果)
+        # 篩選高相似度的結果 
         good_zh_matches = []
         for text, score in zh_matches:
-            if score >= 50:
+            if score >= 80:
                 matching_candidate = next(c for c in zh_candidates if c['nutrition_zh'] == text)
                 good_zh_matches.append((matching_candidate, score, 'zh'))
         
@@ -122,7 +122,7 @@ def get_nutrient_columns_from_db(nutrient_name: str):
             
             # 篩選高相似度的拼音結果
             for text, score in pinyin_matches_raw:
-                if score >= 50:
+                if score >= 80:
                     matching_candidate = next(c for c in pinyin_candidates if c['pypinyin'] == text)
                     pinyin_matches.append((matching_candidate, score, 'pinyin'))
         
@@ -139,7 +139,7 @@ def get_nutrient_columns_from_db(nutrient_name: str):
         
         # 篩選高相似度的別名結果
         for text, score in alias_matches_raw:
-            if score >= 50:
+            if score >= 80:
                 matching_candidate = next(c for c in alias_candidates if c['alias'] == text)
                 alias_matches.append((matching_candidate, score, 'alias'))
         

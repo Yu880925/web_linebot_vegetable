@@ -935,7 +935,7 @@ def create_recipe_flex_carousel(recipes_data):
 
 
 def _create_vegetable_flex_message(
-    veg_data_list, alt_text_prefix, is_nutrient_search=False, confidence=None
+    veg_data_list, alt_text_prefix, is_nutrient_search=False, confidence=None, target_nutrients=None
 ):
     bubbles = []
     for veg_data in veg_data_list:
@@ -1624,7 +1624,7 @@ def handle_text_message(event):
 
         # 步驟 2: 如果沒有匹配到固定關鍵字，才交給 LLM 處理
         else:
-            fast_api_url = "https://86a8957ac78f.ngrok-free.app/route" 
+            fast_api_url = os.getenv("FAST_API_URL", "http://localhost:8000") 
             try:
                 response = requests.post(fast_api_url, json={"text": text})
                 response.raise_for_status()
@@ -1668,72 +1668,83 @@ def handle_text_message(event):
                         veg_data_list = None
                         veg_name = None
                         remaining_keywords = list(keywords)
-                        for i, keyword in enumerate(keywords):
-                            temp_veg_list = get_vegetables_by_name_or_alias(keyword)
-                            if temp_veg_list:
-                                veg_data_list = temp_veg_list
-                                veg_name = keyword
-                                remaining_keywords.pop(i)
-                                break
-                        if veg_data_list and veg_name:
-                            veg_full_data = veg_data_list[0]
-                            if remaining_keywords:
-                                reply_text_parts = [f"為您查詢「{veg_name}」的營養成分："]
-                                found_nutrients = []
 
-                                # 步驟 1: 查找所有請求的營養素
-                                for nutrient_keyword in remaining_keywords:
-                                    for key, display_name in NUTRIENT_DISPLAY_MAPPING.items():
-                                        if nutrient_keyword in display_name:
-                                            value = veg_full_data["all_nutrients"].get(key)
-                                            unit_abbr = key.split('_')[-1]
-                                            unit_chinese = UNIT_ABBREVIATION_TO_CHINESE.get(unit_abbr, '')
-                                            if value is not None and not pd.isna(value):
-                                                found_nutrients.append(f"- {display_name}: {value}{unit_chinese}")
-
-                                # 步驟 2: 根據查找結果組合提示文字
-                                if found_nutrients:
-                                    reply_text_parts.extend(found_nutrients)
-                                else:
-                                    reply_text_parts.append(f"\n找不到您指定的營養素，但仍為您顯示「{veg_name}」的綜合營養資訊。")
-
-                                # 步驟 3: 無論結果如何，都先發送組合好的提示文字
-                                messages_to_reply.append(TextMessage(text="\n".join(reply_text_parts)))
-
-                                # 步驟 4: 接著發送包含完整資訊的 Flex Message 字卡
-                                flex_message = _create_vegetable_flex_message(
-                                    veg_data_list,
-                                    f"{veg_name} 營養成分",
-                                    is_nutrient_search=True
-                                )
-                                if flex_message:
-                                    messages_to_reply.append(flex_message)
-                                # --- ^^^^^^ 替換到這裡結束 ^^^^^^ ---
-                            else:
-                                # (只查詢蔬菜名稱時的邏輯維持不變)
-                                messages_to_reply.append(TextMessage(text=f"為您顯示「{veg_name}」的綜合營養資訊："))
-                                flex_message = _create_vegetable_flex_message(veg_data_list, f"{veg_name} 營養成分", is_nutrient_search=True)
-                                if flex_message:
-                                    messages_to_reply.append(flex_message)
+                        # 步驟 1: 優先處理「查詢富含某營養素的蔬菜」
+                        all_results = []
+                        found_nutrients = []
+                        # 遍歷所有關鍵字，看它們是否是營養素
+                        for nutrient_keyword in remaining_keywords:
+                            reco_result = get_top_vegetables_by_nutrient(nutrient_keyword)
+                            # 判斷結果是否為有效的營養素查詢結果
+                            # 這裡的判斷邏輯可能需要根據 get_top_vegetables_by_nutrient 的回傳值來微調
+                            if reco_result and isinstance(reco_result, list) and 'error' not in reco_result[0]:
+                                all_results.extend(reco_result)
+                                found_nutrients.append(nutrient_keyword)
+                        
+                        if all_results:
+                            intro_text = f"菜菜子分別為您查詢了富含「{', '.join(found_nutrients)}」的蔬菜："
+                            messages_to_reply.append(TextMessage(text=intro_text))
+                            grouped_messages = _create_grouped_nutrient_flex_message(all_results, f"多重營養素查詢結果")
+                            if grouped_messages:
+                                messages_to_reply.extend(grouped_messages)
                         else:
-                            all_results = []
-                            found_nutrients = []
-                            for nutrient_keyword in keywords:
-                                reco_result = get_top_vegetables_by_nutrient(nutrient_keyword)
-                                if reco_result and isinstance(reco_result, list):
-                                    all_results.extend(reco_result)
-                                    found_nutrients.append(nutrient_keyword)
-                            if all_results:
-                                intro_text = f"菜菜子分別為您查詢了富含「{', '.join(found_nutrients)}」的蔬菜："
-                                messages_to_reply.append(TextMessage(text=intro_text))
-                                grouped_messages = _create_grouped_nutrient_flex_message(all_results, f"多重營養素查詢結果")
-                                if grouped_messages:
-                                    messages_to_reply.extend(grouped_messages)
+                            # 步驟 2: 如果找不到營養素，則處理「查詢特定蔬菜營養素」或「只查詢蔬菜」
+                            # 尋找蔬菜名稱
+                            veg_data_list = None
+                            veg_name = None
+                            
+                            for i, keyword in enumerate(keywords):
+                                temp_veg_list = get_vegetables_by_name_or_alias(keyword)
+                                if temp_veg_list:
+                                    veg_data_list = temp_veg_list
+                                    veg_name = keyword
+                                    remaining_keywords = [k for k in keywords if k != keyword]
+                                    break
+                            
+                            if veg_data_list and veg_name:
+                                veg_full_data = veg_data_list[0]
+                                
+                                # 判斷是否指定了營養素
+                                if remaining_keywords:
+                                    found_nutrients_text = []
+                                    for nutrient_keyword in remaining_keywords:
+                                        for key, display_name in NUTRIENT_DISPLAY_MAPPING.items():
+                                            if nutrient_keyword in display_name:
+                                                value = veg_full_data["all_nutrients"].get(key)
+                                                unit_abbr = key.split('_')[-1]
+                                                unit_chinese = UNIT_ABBREVIATION_TO_CHINESE.get(unit_abbr, '')
+                                                if value is not None and not pd.isna(value):
+                                                    found_nutrients_text.append(f"- {display_name}: {value}{unit_chinese}")
+
+                                    if found_nutrients_text:
+                                        reply_text = f"為您查詢「{veg_name}」的營養成分：\n" + "\n".join(found_nutrients_text)
+                                        messages_to_reply.append(TextMessage(text=reply_text))
+                                    else:
+                                        reply_text = f"找不到您指定的營養素，但仍為您顯示「{veg_name}」的綜合營養資訊。"
+                                        messages_to_reply.append(TextMessage(text=reply_text))
+                                    
+                                    flex_message = _create_vegetable_flex_message(
+                                        veg_data_list,
+                                        f"{veg_name} 營養成分",
+                                        is_nutrient_search=True,
+                                        target_nutrients=remaining_keywords
+                                    )
+                                    if flex_message:
+                                        messages_to_reply.append(flex_message)
+                                else:
+                                    # 只查詢蔬菜名稱時的邏輯
+                                    messages_to_reply.append(TextMessage(text=f"為您顯示「{veg_name}」的綜合營養資訊："))
+                                    flex_message = _create_vegetable_flex_message(
+                                        veg_data_list, 
+                                        f"{veg_name} 營養成分", 
+                                        is_nutrient_search=True
+                                    )
+                                    if flex_message:
+                                        messages_to_reply.append(flex_message)
                             else:
                                 messages_to_reply.append(TextMessage(text=f"抱歉，找不到符合「{'、'.join(keywords)}」的蔬菜或營養資訊。"))
                     else:
                         messages_to_reply.append(TextMessage(text="請提供想查詢的蔬菜或營養素名稱。"))
-
 
                 elif intent == "recipe":
                     if llm_payload.get("payload", {}).get("summary_text"):
