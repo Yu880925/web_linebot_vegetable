@@ -1539,8 +1539,6 @@ def try_handle_price_text_query(text):
         return None
 
 
-
-@handler.add(MessageEvent, message=TextMessageContent)
 @handler.add(MessageEvent, message=TextMessageContent)
 def handle_text_message(event):
     print(f"Received text: {event.message.text}")
@@ -1626,7 +1624,7 @@ def handle_text_message(event):
 
         # 步驟 2: 如果沒有匹配到固定關鍵字，才交給 LLM 處理
         else:
-            fast_api_url = "http://host.docker.internal:8000/classify_intent" 
+            fast_api_url = "https://86a8957ac78f.ngrok-free.app/route" 
             try:
                 response = requests.post(fast_api_url, json={"text": text})
                 response.raise_for_status()
@@ -1681,7 +1679,9 @@ def handle_text_message(event):
                             veg_full_data = veg_data_list[0]
                             if remaining_keywords:
                                 reply_text_parts = [f"為您查詢「{veg_name}」的營養成分："]
-                                found = False
+                                found_nutrients = []
+
+                                # 步驟 1: 查找所有請求的營養素
                                 for nutrient_keyword in remaining_keywords:
                                     for key, display_name in NUTRIENT_DISPLAY_MAPPING.items():
                                         if nutrient_keyword in display_name:
@@ -1689,19 +1689,28 @@ def handle_text_message(event):
                                             unit_abbr = key.split('_')[-1]
                                             unit_chinese = UNIT_ABBREVIATION_TO_CHINESE.get(unit_abbr, '')
                                             if value is not None and not pd.isna(value):
-                                                reply_text_parts.append(f"- {display_name}: {value}{unit_chinese}")
-                                                found = True
-                                if not found:
-                                    reply_text_parts.append(f"\n找不到指定的營養素，為您顯示「{veg_name}」的綜合營養資訊。")
-                                    flex_message = _create_vegetable_flex_message(veg_data_list, f"{veg_name} 營養成分", is_nutrient_search=True)
-                                    if flex_message:
-                                        messages_to_reply.append(TextMessage(text=reply_text_parts[0]))
-                                        messages_to_reply.append(flex_message)
-                                    else:
-                                        messages_to_reply.append(TextMessage(text=f"抱歉，找不到「{veg_name}」的詳細營養資訊。"))
+                                                found_nutrients.append(f"- {display_name}: {value}{unit_chinese}")
+
+                                # 步驟 2: 根據查找結果組合提示文字
+                                if found_nutrients:
+                                    reply_text_parts.extend(found_nutrients)
                                 else:
-                                    messages_to_reply.append(TextMessage(text="\n".join(reply_text_parts)))
+                                    reply_text_parts.append(f"\n找不到您指定的營養素，但仍為您顯示「{veg_name}」的綜合營養資訊。")
+
+                                # 步驟 3: 無論結果如何，都先發送組合好的提示文字
+                                messages_to_reply.append(TextMessage(text="\n".join(reply_text_parts)))
+
+                                # 步驟 4: 接著發送包含完整資訊的 Flex Message 字卡
+                                flex_message = _create_vegetable_flex_message(
+                                    veg_data_list,
+                                    f"{veg_name} 營養成分",
+                                    is_nutrient_search=True
+                                )
+                                if flex_message:
+                                    messages_to_reply.append(flex_message)
+                                # --- ^^^^^^ 替換到這裡結束 ^^^^^^ ---
                             else:
+                                # (只查詢蔬菜名稱時的邏輯維持不變)
                                 messages_to_reply.append(TextMessage(text=f"為您顯示「{veg_name}」的綜合營養資訊："))
                                 flex_message = _create_vegetable_flex_message(veg_data_list, f"{veg_name} 營養成分", is_nutrient_search=True)
                                 if flex_message:
@@ -1724,6 +1733,43 @@ def handle_text_message(event):
                                 messages_to_reply.append(TextMessage(text=f"抱歉，找不到符合「{'、'.join(keywords)}」的蔬菜或營養資訊。"))
                     else:
                         messages_to_reply.append(TextMessage(text="請提供想查詢的蔬菜或營養素名稱。"))
+
+
+                elif intent == "recipe":
+                    if llm_payload.get("payload", {}).get("summary_text"):
+                        summary_text = llm_payload["payload"]["summary_text"]
+                        
+                        pattern = re.compile(r'-\s*(.*?)\s*\(ID:\s*(\d+)\)：(.*)', re.MULTILINE)
+                        matches = pattern.findall(summary_text)
+                        
+                        if matches:
+                            recipes_list = []
+                            minio_url = os.getenv('url_9000') 
+                            minio_bucket = os.getenv("MINIO_BUCKET_NAME", "veg-data-bucket")
+
+                            for title, recipe_id, summary in matches:
+                                # 確保組合出正確且一致的圖片 URL
+                                image_url = f"{minio_url}/{minio_bucket}/images/{recipe_id}.jpg"
+                                recipes_list.append({
+                                    "id": recipe_id,
+                                    "title": title,
+                                    "image_url": image_url,
+                                    "summary": summary.strip()
+                                })
+                            
+                            if recipes_list:
+                                flex_message = _create_recipe_flex_message(recipes_list)
+                                if flex_message:
+                                    messages_to_reply.append(flex_message)
+                                else:
+                                    messages_to_reply.append(TextMessage(text="抱歉，無法生成食譜卡片。"))
+                            else:
+                                messages_to_reply.append(TextMessage(text="抱歉，沒有解析到任何食譜資訊。"))
+                        else:
+                            messages_to_reply.append(TextMessage(text="抱歉，無法從 LLM 提供的摘要中解析食譜資訊。"))
+                    else:
+                        messages_to_reply.append(TextMessage(text="抱歉，LLM 沒有提供食譜摘要。"))
+            
 
                 elif intent == "當季蔬菜月份":
                     # (這裡貼上你已有的 當季蔬菜月份 邏輯)
@@ -1874,6 +1920,69 @@ def _create_price_bubble(price_info):
                 ),
             ],
         ),
+    )
+
+
+def _create_recipe_flex_message(recipes_list):
+    """
+    【再次修正】根據食譜列表創建 Flex Message，並添加按鈕。
+    修正了 web_url 和 recipe_id 未定義的問題。
+    """
+    if not recipes_list:
+        return None
+
+    bubbles = []
+    # 【修正 1/2】在這裡定義 web_url，使其在函式內可用
+    web_url = os.getenv("url_5000", "http://localhost:5000")
+
+    for recipe in recipes_list[:10]:
+        # 【修正 2/2】從傳入的 recipe 字典中取得 id
+        recipe_id = recipe.get("id")
+        title = recipe.get("title", "無標題")
+        image_url = recipe.get("image_url", "https://via.placeholder.com/500x333.png?text=No+Image")
+        summary = recipe.get("summary", "無摘要")
+
+        # 建立一個 FlexBubble 物件
+        bubble = FlexBubble(
+            size="giga",
+            hero=FlexImage(
+                url=image_url,
+                size="full",
+                aspect_ratio="20:13",
+                aspect_mode="cover"
+            ),
+            body=FlexBox(
+                layout="vertical",
+                contents=[
+                    FlexText(text=title, weight="bold", size="xl", wrap=True),
+                    FlexText(text=summary, size="sm", margin="md", wrap=True)
+                ]
+            ),
+            # 為卡片加上 footer 按鈕
+            footer=FlexBox(
+                layout="vertical",
+                spacing="sm",
+                contents=[
+                    FlexButton(
+                        style="link",
+                        height="sm",
+                        action=URIAction(
+                            label="前往網站看詳細食譜",
+                            # 現在 web_url 和 recipe_id 都是已定義的，可以正確組合 URL
+                            uri=f"{web_url}/?section=recipe&id={recipe_id}"
+                        )
+                    )
+                ]
+            )
+        )
+        bubbles.append(bubble)
+
+    if not bubbles:
+        return None
+
+    return FlexMessage(
+        alt_text="食譜推薦",
+        contents=FlexCarousel(contents=bubbles)
     )
 
 def create_multi_price_flex_carousel(price_info_list, alt_text="蔬菜價格資訊"):
