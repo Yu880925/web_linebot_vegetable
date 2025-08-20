@@ -1443,7 +1443,6 @@ def get_current_price_by_name(name_query):
     return price_info, cname
 
 
-# app.py
 
 def try_handle_price_text_query(text):
     """針對文字輸入嘗試處理價格相關查詢，並回傳包含文字與 Flex 字卡的訊息列表"""
@@ -1537,6 +1536,9 @@ def try_handle_price_text_query(text):
     except Exception as e:
         app.logger.error(f"try_handle_price_text_query error: {e}")
         return None
+
+
+
 
 
 @handler.add(MessageEvent, message=TextMessageContent)
@@ -1639,6 +1641,7 @@ def handle_text_message(event):
                     if keywords:
                         veg_name = keywords[0]
                         veg_data = get_vegetables_by_name_or_alias(veg_name)
+                        found_local_data = False
                         if veg_data:
                             veg_id = veg_data[0]['id']
                             api_url = f"{os.getenv('url_5000', 'http://localhost:5000')}/api/price"
@@ -1655,98 +1658,105 @@ def handle_text_message(event):
                                             contents=price_bubble
                                         )
                                         messages_to_reply.append(flex_message)
+                                        found_local_data = True
                                 else:
                                     messages_to_reply.append(TextMessage(text=f"抱歉，目前沒有 {veg_name} 的價格資訊。"))
+                                    found_local_data = True
                             except requests.exceptions.RequestException as e:
                                 app.logger.error(f"呼叫 /api/price 失敗: {e}")
                                 messages_to_reply.append(TextMessage(text="抱歉，內部價格服務發生錯誤。"))
+                                found_local_data = True
+                        if not found_local_data:
+                            combined_query = " ".join(keywords) + " 價格"
+                            messages_to_reply.append(TextMessage(text=f"抱歉，本地資料庫找不到「{keywords[0]}」的價格資訊。我正在為您進行線上搜尋..."))
+
+                            try:
+                                # 假設你的LLM服務API網址
+                                FAST_API_URL = os.getenv("FAST_API_URL", "http://localhost:8000/llm_search_endpoint")
+                                response = requests.post(FAST_API_URL, json={"prompt": combined_query}, timeout=30)
+                                response.raise_for_status()
+                                
+                                llm_response = response.json()
+                                
+                                answer_text = llm_response.get('answer', '很抱歉，未能從線上搜尋中得到有效資訊。')
+                                messages_to_reply.append(TextMessage(text=answer_text))
+
+                            except requests.exceptions.RequestException as e:
+                                app.logger.error(f"呼叫LLM服務失敗: {e}")
+                                messages_to_reply.append(TextMessage(text="抱歉，線上搜尋服務目前無法連線。"))
                         else:
                             messages_to_reply.append(TextMessage(text=f"抱歉，沒有找到名為 {veg_name} 的蔬菜。"))
                 
                 elif intent == "nutrition":
                     if keywords:
-                        veg_data_list = None
-                        veg_name = None
-                        remaining_keywords = list(keywords)
-
-                        # 步驟 1: 優先處理「查詢富含某營養素的蔬菜」
-                        all_results = []
-                        found_nutrients = []
-                        # 遍歷所有關鍵字，看它們是否是營養素
-                        for nutrient_keyword in remaining_keywords:
-                            reco_result = get_top_vegetables_by_nutrient(nutrient_keyword)
-                            # 判斷結果是否為有效的營養素查詢結果
-                            # 這裡的判斷邏輯可能需要根據 get_top_vegetables_by_nutrient 的回傳值來微調
-                            if reco_result and isinstance(reco_result, list) and 'error' not in reco_result[0]:
-                                all_results.extend(reco_result)
-                                found_nutrients.append(nutrient_keyword)
+                        # 將關鍵字列表合併回一個字串
+                        combined_query = " ".join(keywords)
                         
-                        if all_results:
-                            intro_text = f"菜菜子分別為您查詢了富含「{', '.join(found_nutrients)}」的蔬菜："
-                            messages_to_reply.append(TextMessage(text=intro_text))
-                            grouped_messages = _create_grouped_nutrient_flex_message(all_results, f"多重營養素查詢結果")
-                            if grouped_messages:
-                                messages_to_reply.extend(grouped_messages)
-                        else:
-                            # 步驟 2: 如果找不到營養素，則處理「查詢特定蔬菜營養素」或「只查詢蔬菜」
-                            # 尋找蔬菜名稱
-                            veg_data_list = None
-                            veg_name = None
-                            
-                            for i, keyword in enumerate(keywords):
-                                temp_veg_list = get_vegetables_by_name_or_alias(keyword)
-                                if temp_veg_list:
-                                    veg_data_list = temp_veg_list
-                                    veg_name = keyword
-                                    remaining_keywords = [k for k in keywords if k != keyword]
-                                    break
-                            
-                            if veg_data_list and veg_name:
-                                veg_full_data = veg_data_list[0]
-                                
-                                # 判斷是否指定了營養素
-                                if remaining_keywords:
-                                    found_nutrients_text = []
-                                    for nutrient_keyword in remaining_keywords:
-                                        for key, display_name in NUTRIENT_DISPLAY_MAPPING.items():
-                                            if nutrient_keyword in display_name:
-                                                value = veg_full_data["all_nutrients"].get(key)
-                                                unit_abbr = key.split('_')[-1]
-                                                unit_chinese = UNIT_ABBREVIATION_TO_CHINESE.get(unit_abbr, '')
-                                                if value is not None and not pd.isna(value):
-                                                    found_nutrients_text.append(f"- {display_name}: {value}{unit_chinese}")
+                        # 直接用合併後的字串進行查詢
+                        veg_data_list = get_top_vegetables_by_nutrient(combined_query)
 
-                                    if found_nutrients_text:
-                                        reply_text = f"為您查詢「{veg_name}」的營養成分：\n" + "\n".join(found_nutrients_text)
-                                        messages_to_reply.append(TextMessage(text=reply_text))
-                                    else:
-                                        reply_text = f"找不到您指定的營養素，但仍為您顯示「{veg_name}」的綜合營養資訊。"
-                                        messages_to_reply.append(TextMessage(text=reply_text))
-                                    
-                                    flex_message = _create_vegetable_flex_message(
-                                        veg_data_list,
-                                        f"{veg_name} 營養成分",
-                                        is_nutrient_search=True,
-                                        target_nutrients=remaining_keywords
-                                    )
-                                    if flex_message:
-                                        messages_to_reply.append(flex_message)
-                                else:
-                                    # 只查詢蔬菜名稱時的邏輯
-                                    messages_to_reply.append(TextMessage(text=f"為您顯示「{veg_name}」的綜合營養資訊："))
-                                    flex_message = _create_vegetable_flex_message(
-                                        veg_data_list, 
-                                        f"{veg_name} 營養成分", 
-                                        is_nutrient_search=True
-                                    )
-                                    if flex_message:
-                                        messages_to_reply.append(flex_message)
+                        # 後續的處理邏輯需要根據 veg_data_list 的回傳結果來調整
+                        if isinstance(veg_data_list, str) and "錯誤" in veg_data_list:
+                            found_local_data = False
+                            # 處理查詢錯誤或找不到資料的情況
+                            messages_to_reply.append(TextMessage(text=f"抱歉，找不到與「{combined_query}」相關的蔬菜或營養資訊。"))
+                        elif veg_data_list:
+                            found_local_data = True
+                            # 判斷回傳的是單一蔬菜的特定營養素，還是多個蔬菜的排行
+                            # 一個簡單的判斷方式：如果回傳結果中 nutrient_value 都有值，且只有一種蔬菜
+                            is_specific_veg_query = len(veg_data_list) == 1 and veg_data_list[0].get('nutrient_value') is not None
+
+                            if is_specific_veg_query:
+                                # 這是查詢特定蔬菜的營養素
+                                veg_data = veg_data_list[0]
+                                reply_text = f"為您查詢「{veg_data['chinese_name']}」的營養成分：\n- {veg_data['nutrient_name']}: {veg_data['nutrient_value']}{veg_data['unit']}"
+                                messages_to_reply.append(TextMessage(text=reply_text))
+                                
+                                flex_message = _create_vegetable_flex_message(
+                                    veg_data_list,
+                                    f"{veg_data['chinese_name']} 營養成分",
+                                    is_nutrient_search=True
+                                )
+                                if flex_message:
+                                    messages_to_reply.append(flex_message)
                             else:
-                                messages_to_reply.append(TextMessage(text=f"抱歉，找不到符合「{'、'.join(keywords)}」的蔬菜或營養資訊。"))
+                                # 這是查詢營養素排行
+                                intro_text = f"菜菜子為您查詢了富含「{combined_query}」的蔬菜："
+                                messages_to_reply.append(TextMessage(text=intro_text))
+                                grouped_messages = _create_grouped_nutrient_flex_message(veg_data_list, "營養素查詢結果")
+                                if grouped_messages:
+                                    messages_to_reply.extend(grouped_messages)
+                        else:
+                            # 情況3: 本地資料庫沒有找到任何結果，直接跳轉到LLM備援
+                            found_local_data = False
+                        if not found_local_data:
+                            messages_to_reply.append(TextMessage(text=f"正在為您進行線上搜尋並總結..."))
+                            
+                            # 準備傳送給LLM的payload，將原始查詢字串傳過去
+                            payload = {
+                                "prompt": combined_query
+                            }
+                            
+                            try:
+                                # 假設你的LLM服務API網址
+                                FAST_API_URL = os.getenv("FAST_API_URL", "http://localhost:8000/llm_search_endpoint")
+                                response = requests.post(FAST_API_URL, json=payload, timeout=30)
+                                response.raise_for_status()
+                                
+                                llm_response = response.json()
+                                
+                                answer_text = llm_response.get('answer', '很抱歉，未能從線上搜尋中得到有效資訊。')
+                                messages_to_reply.append(TextMessage(text=answer_text))
+
+                            except requests.exceptions.RequestException as e:
+                                print(f"呼叫LLM服務失敗: {e}")
+                                messages_to_reply.append(TextMessage(text="抱歉，線上搜尋服務目前無法連線。"))
                     else:
                         messages_to_reply.append(TextMessage(text="請提供想查詢的蔬菜或營養素名稱。"))
 
+
                 elif intent == "recipe":
+                    found_structured_data = True
                     if llm_payload.get("payload", {}).get("summary_text"):
                         summary_text = llm_payload["payload"]["summary_text"]
                         
@@ -1778,25 +1788,77 @@ def handle_text_message(event):
                                 messages_to_reply.append(TextMessage(text="抱歉，沒有解析到任何食譜資訊。"))
                         else:
                             messages_to_reply.append(TextMessage(text="抱歉，無法從 LLM 提供的摘要中解析食譜資訊。"))
+                            found_structured_data = False
                     else:
                         messages_to_reply.append(TextMessage(text="抱歉，LLM 沒有提供食譜摘要。"))
+                        found_structured_data = False
+                    
+                    if not found_structured_data:
+                        # 使用者原始輸入作為查詢字串
+                        query_string = event.message.text
+                        
+                        try:
+                            messages_to_reply.append(TextMessage(text="我正在為您進行線上搜尋食譜，請稍候片刻..."))
+                            # 假設你的LLM服務API網址
+                            FAST_API_URL = os.getenv("FAST_API_URL", "http://localhost:8000/llm_search_endpoint")
+                            # 發送POST請求給LLM服務
+                            response = requests.post(
+                                FAST_API_URL, 
+                                json={"prompt": query_string}, 
+                                timeout=45 # 食譜搜尋通常需要較長時間，給予更長超時
+                            )
+                            response.raise_for_status()
+                            
+                            llm_response = response.json()
+                            
+                            answer_text = llm_response.get('answer', '很抱歉，未能從線上搜尋中得到有效資訊。')
+                            messages_to_reply.append(TextMessage(text=answer_text))
+
+                        except requests.exceptions.RequestException as e:
+                            print(f"呼叫LLM服務失敗: {e}")
+                            messages_to_reply.append(TextMessage(text="抱歉，線上搜尋服務目前無法連線。"))
             
 
                 elif intent == "當季蔬菜月份":
                     # (這裡貼上你已有的 當季蔬菜月份 邏輯)
-                     if keywords:
+                    if keywords:
                         veg_name = keywords[0]
                         veg_data = get_vegetables_by_name_or_alias(veg_name)
+                        found_local_data = False
                         if veg_data:
                             seasons = get_vegetable_seasons(veg_data[0]['id'])
                             if seasons:
                                 # seasons 應該是字串 "春季,夏季" 或 "全年"
                                 reply_text = f"{veg_name} 的主要產季為 {seasons}。"
                                 messages_to_reply.append(TextMessage(text=reply_text))
+                                found_local_data = True
                             else:
                                 messages_to_reply.append(TextMessage(text=f"抱歉，目前沒有 {veg_name} 的產季資訊。"))
+                                found_local_data = True
                         else:
                             messages_to_reply.append(TextMessage(text=f"抱歉，沒有找到名為 {veg_name} 的蔬菜。"))
+                    if not found_local_data:
+                        # 情況3: 本地資料庫沒有找到該蔬菜
+                        combined_query = f"{veg_name} 產季"
+                        messages_to_reply.append(TextMessage(text=f"抱歉，本地資料庫找不到關於「{veg_name}」的資訊。我正在為您進行線上搜尋..."))
+
+                        try:
+                            # 假設你的LLM服務API網址
+                            LLM_API_URL = os.getenv("LLM_API_URL", "http://localhost:8000/llm_search_endpoint")
+                            response = requests.post(
+                                LLM_API_URL, 
+                                json={"prompt": combined_query}, 
+                                timeout=30
+                            )
+                            response.raise_for_status()
+                            
+                            llm_response = response.json()
+                            
+                            answer_text = llm_response.get('answer', '很抱歉，未能從線上搜尋中得到有效資訊。')
+                            messages_to_reply.append(TextMessage(text=answer_text))
+
+                        except requests.exceptions.RequestException as e:
+                            print(f"呼叫LLM服務失敗: {e}")
                 
                 else:
                     messages_to_reply.append(TextMessage(text="抱歉，我不清楚您的意思。您可以試著說『高麗菜的價格』或『高麗菜的營養』。"))

@@ -484,8 +484,7 @@ def get_vegetables_by_name_or_alias(search_term: str, **kwargs):
         )
         good_name_matches = []
         for text, score in name_matches_raw:
-            if score >= 60:
-                # 一個別名可能對應多個 vege_id (雖然不太可能，但做個保護)
+            if score >= 80:
                 matching_candidates = [c for c in name_candidates if c['alias'] == text]
                 for mc in matching_candidates:
                     good_name_matches.append((mc, score, 'name'))
@@ -501,7 +500,7 @@ def get_vegetables_by_name_or_alias(search_term: str, **kwargs):
         )
         pinyin_matches = []
         for text, score in pinyin_matches_raw:
-             if score >= 60:
+             if score >= 80:
                 matching_candidates = [c for c in pinyin_candidates if c['alias'] == text]
                 for mc in matching_candidates:
                     pinyin_matches.append((mc, score, 'pinyin'))
@@ -517,7 +516,7 @@ def get_vegetables_by_name_or_alias(search_term: str, **kwargs):
         )
         typo_matches = []
         for text, score in typo_matches_raw:
-            if score >= 60:
+            if score >= 80:
                 matching_candidates = [c for c in typo_candidates if c['alias'] == text]
                 for mc in matching_candidates:
                     typo_matches.append((mc, score, 'typo'))
