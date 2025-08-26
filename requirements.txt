@@ -14,3 +14,4 @@ flask-cors
 psycopg2-binary
 pypinyin
 thefuzz
+redis

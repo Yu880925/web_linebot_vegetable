@@ -53,6 +53,10 @@ from linebot.v3.webhooks.models import (
 from linebot.v3.webhooks.models import PostbackEvent 
 import re
 import traceback
+import redis
+import threading
+import json
+import time
 
 
 # 新增日誌以確認 rec_veg 模組載入
@@ -113,7 +117,20 @@ UNIT_ABBREVIATION_TO_CHINESE = {
     "ug": "微克",
 }
 
-# === 新增：資料庫連線函式 ===
+def get_redis_connection():
+    """建立並回傳 Redis 連線"""
+    try:
+        redis_url = os.getenv("REDIS_URL")
+        if not redis_url:
+            print("警告：未設定 REDIS_URL，Redis 快取功能已停用。")
+            return None
+        # decode_responses=True 讓 redis.get() 回傳字串而非 bytes
+        return redis.from_url(redis_url, decode_responses=True)
+    except Exception as e:
+        print(f"Redis 連線失敗: {e}")
+        return None
+
+
 def get_db_connection():
     """建立並回傳 PostgreSQL 資料庫連線"""
     try:
@@ -126,9 +143,6 @@ def get_db_connection():
         return None
 
 
-import threading
-import json
-import time
 
 # ... (其他 import 和函式)
 

@@ -1,6 +1,18 @@
 version: '3.8'
 
 services:
+  redis:
+    image: redis:7-alpine # 使用輕量的 alpine 版本
+    container_name: redis
+    ports:
+      - "6379:6379" # 將容器的 6379 port 映射到主機，方便 Redis Insight 連接
+    volumes:
+      - redis-data:/data # 持久化 Redis 資料
+    healthcheck:
+      test: [ "CMD", "redis-cli", "ping" ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
   minio:
     image: minio/minio
     container_name: minio
@@ -38,7 +50,7 @@ services:
   #     retries: 5
   #     start_period: 30s
   #   command: postgres -c 'listen_addresses=0.0.0.0'
-    
+
   linebot_app:
     build: . # 從當前目錄的 Dockerfile 建構映像
     container_name: linebot_app-1
@@ -48,12 +60,14 @@ services:
       - .env
     depends_on:
       minio:
+        condition: service_healthy
+      redis:
         condition: service_healthy # 確保 MinIO 服務啟動並健康後再啟動 linebot_app
       # postgres:
       #   condition: service_healthy # 確保 Postgres 服務啟動並健康後再啟動 linebot_app
     volumes:
       - .:/app # 將主機的當前目錄映射到容器的 /app，方便開發時的代碼同步
-    
+
 volumes:
   minio-data:
-  # postgres-data:
+  redis-data: # postgres-data:

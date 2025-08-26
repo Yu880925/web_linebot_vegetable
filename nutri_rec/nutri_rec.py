@@ -183,6 +183,20 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
     此函式現可處理多個匹配的營養成分，並按營養成分分組顯示結果。
     也可以處理包含蔬菜名稱和營養素的複合查詢，如"高麗菜 蛋白質"。
     """
+
+    redis_conn = get_redis_connection()
+    cache_key = f"nutrient_search:{nutrient_name.strip()}"
+
+    if redis_conn:
+        try:
+            cached_result = redis_conn.get(cache_key)
+            if cached_result:
+                print(f"快取命中 (HIT) - Key: {cache_key}")
+                return json.loads(cached_result)
+        except Exception as e:
+            print(f"從 Redis 讀取失敗: {e}")
+
+
     # 檢查是否為複合查詢（包含蔬菜名稱和營養素）
     # 常見的營養素關鍵字（按長度排序，確保長詞優先匹配）
     nutrient_keywords = ["碳水化合物", "維生素", "礦物質", "蛋白質", "脂肪", "纖維", "葉酸", "熱量", "calories", "protein", "fat", "carb", "fiber", "vitamin", "mineral", "鈣", "鐵", "鋅", "鉀", "鈉", "鎂", "磷", "糖", "水"]
@@ -233,6 +247,13 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
                         finally:
                             conn.close()
                 
+                if redis_conn:
+                    try:
+                        redis_conn.set(cache_key, json.dumps(veg_result, default=str), ex=3600)
+                        print(f"快取寫入 (SET) - Key: {cache_key}")
+                    except Exception as e:
+                        print(f"寫入 Redis 失敗: {e}")
+
                 return veg_result
             
             # 如果第一個詞不是蔬菜名稱，嘗試最後一個詞作為營養素
@@ -271,7 +292,12 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
                                 print(f"Error querying specific nutrient: {e}")
                             finally:
                                 conn.close()
-                    
+                    if redis_conn:
+                        try:
+                            redis_conn.set(cache_key, json.dumps(veg_result, default=str), ex=3600)
+                            print(f"快取寫入 (SET) - Key: {cache_key}")
+                        except Exception as e:
+                            print(f"寫入 Redis 失敗: {e}")
                     return veg_result
         
         # 如果按空格分割沒有結果，嘗試處理沒有空格的複合查詢
@@ -316,7 +342,12 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
                                     print(f"Error querying specific nutrient: {e}")
                                 finally:
                                     conn.close()
-                        
+                        if redis_conn:
+                            try:
+                                redis_conn.set(cache_key, json.dumps(veg_result, default=str), ex=3600)
+                                print(f"快取寫入 (SET) - Key: {cache_key}")
+                            except Exception as e:
+                                print(f"寫入 Redis 失敗: {e}")
                         return veg_result
         
         # 如果複合查詢處理失敗，繼續原有的營養素查詢邏輯
@@ -418,7 +449,12 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
         final_results_list = []
         for nutrient_name, results in grouped_results.items():
             final_results_list.extend(results)
-        
+        if redis_conn:
+            try:
+                redis_conn.set(cache_key, json.dumps(final_results_list, default=str), ex=3600)
+                print(f"快取寫入 (SET) - Key: {cache_key}")
+            except Exception as e:
+                print(f"寫入 Redis 失敗: {e}")
         return final_results_list
     except Exception as e:
         print(f"Database query failed: {e}")
@@ -438,6 +474,19 @@ def get_vegetables_by_name_or_alias(search_term: str, **kwargs):
     3. 最後比對錯字 (vege_alias)
     回傳所有符合條件的蔬菜詳細資訊。
     """
+
+    redis_conn = get_redis_connection()
+    cache_key = f"veg_name:{search_term.strip()}"
+    
+    if redis_conn:
+        try:
+            cached_result = redis_conn.get(cache_key)
+            if cached_result:
+                print(f"快取命中 (HIT) - Key: {cache_key}")
+                return json.loads(cached_result) # 從 JSON 字串還原成 Python 物件
+        except Exception as e:
+            print(f"從 Redis 讀取失敗: {e}")
+
     conn = get_db_connection()
     if conn is None:
         return "錯誤：無法連接資料庫。"
@@ -581,6 +630,16 @@ def get_vegetables_by_name_or_alias(search_term: str, **kwargs):
                     'nutrient_value': None,
                     'unit': ""
                 })
+
+        if redis_conn:
+            try:
+                # 將結果序列化為 JSON 字串並存入 Redis，設定 1 小時 (3600秒) 過期
+                # default=str 是為了處理日期時間等無法直接 JSON 序列化的物件
+                redis_conn.set(cache_key, json.dumps(results_list, default=str), ex=3600)
+                print(f"快取寫入 (SET) - Key: {cache_key}")
+            except Exception as e:
+                print(f"寫入 Redis 失敗: {e}")
+
 
         return results_list
     except Exception as e:
