@@ -19,6 +19,7 @@ from nutri_rec.nutri_rec import (
     get_top_vegetables_by_nutrient,
     get_vegetables_by_name_or_alias,
 )
+from redis_client import get_redis_connection
 import io
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
@@ -117,18 +118,7 @@ UNIT_ABBREVIATION_TO_CHINESE = {
     "ug": "微克",
 }
 
-def get_redis_connection():
-    """建立並回傳 Redis 連線"""
-    try:
-        redis_url = os.getenv("REDIS_URL")
-        if not redis_url:
-            print("警告：未設定 REDIS_URL，Redis 快取功能已停用。")
-            return None
-        # decode_responses=True 讓 redis.get() 回傳字串而非 bytes
-        return redis.from_url(redis_url, decode_responses=True)
-    except Exception as e:
-        print(f"Redis 連線失敗: {e}")
-        return None
+r = get_redis_connection()
 
 
 def get_db_connection():
@@ -1687,7 +1677,7 @@ def handle_text_message(event):
                             try:
                                 # 假設你的LLM服務API網址
                                 FAST_API_URL = os.getenv("FAST_API_URL", "http://localhost:8000/llm_search_endpoint")
-                                response = requests.post(FAST_API_URL, json={"prompt": combined_query}, timeout=30)
+                                response = requests.post(FAST_API_URL, json={"prompt": combined_query}, timeout=10)
                                 response.raise_for_status()
                                 
                                 llm_response = response.json()
@@ -1698,8 +1688,8 @@ def handle_text_message(event):
                             except requests.exceptions.RequestException as e:
                                 app.logger.error(f"呼叫LLM服務失敗: {e}")
                                 messages_to_reply.append(TextMessage(text="抱歉，線上搜尋服務目前無法連線。"))
-                        else:
-                            messages_to_reply.append(TextMessage(text=f"抱歉，沒有找到名為 {veg_name} 的蔬菜。"))
+                            else:
+                                messages_to_reply.append(TextMessage(text=f"抱歉，沒有找到名為 {veg_name} 的蔬菜。"))
                 
                 elif intent == "nutrition":
                     if keywords:
@@ -1710,7 +1700,7 @@ def handle_text_message(event):
                         veg_data_list = get_top_vegetables_by_nutrient(combined_query)
 
                         # 後續的處理邏輯需要根據 veg_data_list 的回傳結果來調整
-                        if isinstance(veg_data_list, str) and "錯誤" in veg_data_list:
+                        if isinstance(veg_data_list, str):
                             found_local_data = False
                             # 處理查詢錯誤或找不到資料的情況
                             messages_to_reply.append(TextMessage(text=f"抱歉，找不到與「{combined_query}」相關的蔬菜或營養資訊。"))
@@ -1754,7 +1744,7 @@ def handle_text_message(event):
                             try:
                                 # 假設你的LLM服務API網址
                                 FAST_API_URL = os.getenv("FAST_API_URL", "http://localhost:8000/llm_search_endpoint")
-                                response = requests.post(FAST_API_URL, json=payload, timeout=30)
+                                response = requests.post(FAST_API_URL, json=payload, timeout=10)
                                 response.raise_for_status()
                                 
                                 llm_response = response.json()
@@ -1862,7 +1852,7 @@ def handle_text_message(event):
                             response = requests.post(
                                 LLM_API_URL, 
                                 json={"prompt": combined_query}, 
-                                timeout=30
+                                timeout=10
                             )
                             response.raise_for_status()
                             

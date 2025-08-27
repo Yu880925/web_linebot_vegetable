@@ -6,6 +6,14 @@ from dotenv import load_dotenv
 import difflib # 引入 difflib 函式庫
 from pypinyin import pinyin, Style
 from thefuzz import fuzz, process
+import json
+import redis.exceptions
+
+# 根據你的專案結構，從父層資料夾引入 redis_client 模組
+from redis_client import get_redis_connection
+
+# 取得 Redis 連線實例
+r = get_redis_connection()
 
 load_dotenv()
 
@@ -177,15 +185,18 @@ def get_nutrient_columns_from_db(nutrient_name: str):
             conn.close()
 
 
+# In nutri_rec.py
+
+# In nutri_rec.py
+
 def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
     """
-    根據指定的營養成分名稱，從資料庫中找出含量最高的三項蔬菜。
-    此函式現可處理多個匹配的營養成分，並按營養成分分組顯示結果。
-    也可以處理包含蔬菜名稱和營養素的複合查詢，如"高麗菜 蛋白質"。
+    【修改後版本 v2】
+    處理複合查詢、單一蔬菜查詢、以及營養素排行查詢。
     """
-
     redis_conn = get_redis_connection()
-    cache_key = f"nutrient_search:{nutrient_name.strip()}"
+    query_string = nutrient_name.strip()
+    cache_key = f"nutrient_search:{query_string}"
 
     if redis_conn:
         try:
@@ -196,265 +207,143 @@ def get_top_vegetables_by_nutrient(nutrient_name: str, **kwargs):
         except Exception as e:
             print(f"從 Redis 讀取失敗: {e}")
 
-
-    # 檢查是否為複合查詢（包含蔬菜名稱和營養素）
-    # 常見的營養素關鍵字（按長度排序，確保長詞優先匹配）
-    nutrient_keywords = ["碳水化合物", "維生素", "礦物質", "蛋白質", "脂肪", "纖維", "葉酸", "熱量", "calories", "protein", "fat", "carb", "fiber", "vitamin", "mineral", "鈣", "鐵", "鋅", "鉀", "鈉", "鎂", "磷", "糖", "水"]
+    words = re.split(r'[,，\s]+', query_string)
     
-    # 檢查輸入是否包含營養素關鍵字
-    contains_nutrient = any(keyword in nutrient_name for keyword in nutrient_keywords)
+    potential_veg_words = []
+    potential_nutrient_words = []
     
-    if contains_nutrient:
-        # 複合查詢：嘗試分離蔬菜名稱和營養素
-        # 先嘗試按空格分割
-        words = nutrient_name.split()
-        if len(words) >= 2:
-            # 嘗試識別蔬菜名稱和營養素
-            # 先嘗試第一個詞作為蔬菜名稱
-            veg_name = words[0]
-            nutrient_part = " ".join(words[1:])
-            
-            # 先嘗試用蔬菜名稱查詢
-            veg_result = get_vegetables_by_name_or_alias(veg_name)
-            if veg_result and isinstance(veg_result, list) and len(veg_result) > 0:
-                # 找到蔬菜，現在需要查詢該蔬菜的特定營養素資訊
-                # 嘗試從營養素部分獲取營養素資訊
-                nutrient_matches, _ = get_nutrient_columns_from_db(nutrient_part)
-                if nutrient_matches:
-                    # 找到匹配的營養素，更新蔬菜資訊
-                    actual_nutrient_column, found_nutrient_name = nutrient_matches[0]
-                    
-                    # 查詢該蔬菜的特定營養素數值
-                    conn = get_db_connection()
-                    if conn:
-                        try:
-                            cursor = conn.cursor()
-                            veg_id = veg_result[0]['id']
-                            query = f"SELECT {actual_nutrient_column} FROM vege_nutrition WHERE vege_id = %s"
-                            cursor.execute(query, (veg_id,))
-                            result = cursor.fetchone()
-                            if result and result[0] is not None:
-                                nutrient_value = result[0]
-                                unit = actual_nutrient_column.split('_')[-1] if '_' in actual_nutrient_column else ''
-                                
-                                # 更新蔬菜資訊
-                                for veg in veg_result:
-                                    veg['nutrient_name'] = found_nutrient_name
-                                    veg['nutrient_value'] = nutrient_value
-                                    veg['unit'] = unit
-                        except Exception as e:
-                            print(f"Error querying specific nutrient: {e}")
-                        finally:
-                            conn.close()
-                
-                if redis_conn:
-                    try:
-                        redis_conn.set(cache_key, json.dumps(veg_result, default=str), ex=3600)
-                        print(f"快取寫入 (SET) - Key: {cache_key}")
-                    except Exception as e:
-                        print(f"寫入 Redis 失敗: {e}")
-
-                return veg_result
-            
-            # 如果第一個詞不是蔬菜名稱，嘗試最後一個詞作為營養素
-            if len(words) >= 2:
-                veg_name = " ".join(words[:-1])
-                nutrient_part = words[-1]
-                
-                veg_result = get_vegetables_by_name_or_alias(veg_name)
-                if veg_result and isinstance(veg_result, list) and len(veg_result) > 0:
-                    # 找到蔬菜，現在需要查詢該蔬菜的特定營養素資訊
-                    # 嘗試從營養素部分獲取營養素資訊
-                    nutrient_matches, _ = get_nutrient_columns_from_db(nutrient_part)
-                    if nutrient_matches:
-                        # 找到匹配的營養素，更新蔬菜資訊
-                        actual_nutrient_column, found_nutrient_name = nutrient_matches[0]
-                        
-                        # 查詢該蔬菜的特定營養素數值
-                        conn = get_db_connection()
-                        if conn:
-                            try:
-                                cursor = conn.cursor()
-                                veg_id = veg_result[0]['id']
-                                query = f"SELECT {actual_nutrient_column} FROM vege_nutrition WHERE vege_id = %s"
-                                cursor.execute(query, (veg_id,))
-                                result = cursor.fetchone()
-                                if result and result[0] is not None:
-                                    nutrient_value = result[0]
-                                    unit = actual_nutrient_column.split('_')[-1] if '_' in actual_nutrient_column else ''
-                                    
-                                    # 更新蔬菜資訊
-                                    for veg in veg_result:
-                                        veg['nutrient_name'] = found_nutrient_name
-                                        veg['nutrient_value'] = nutrient_value
-                                        veg['unit'] = unit
-                            except Exception as e:
-                                print(f"Error querying specific nutrient: {e}")
-                            finally:
-                                conn.close()
-                    if redis_conn:
-                        try:
-                            redis_conn.set(cache_key, json.dumps(veg_result, default=str), ex=3600)
-                            print(f"快取寫入 (SET) - Key: {cache_key}")
-                        except Exception as e:
-                            print(f"寫入 Redis 失敗: {e}")
-                    return veg_result
+    for word in words:
+        veg_check = get_vegetables_by_name_or_alias(word)
+        if veg_check and isinstance(veg_check, list) and len(veg_check) > 0:
+            potential_veg_words.append({'word': word, 'data': veg_check[0]})
         
-        # 如果按空格分割沒有結果，嘗試處理沒有空格的複合查詢
-        # 例如："高麗菜蛋白質"
-        if len(words) < 2:
-            # 嘗試從營養素關鍵字中找出最長匹配的營養素
-            longest_nutrient = ""
-            for keyword in nutrient_keywords:
-                if keyword in nutrient_name and len(keyword) > len(longest_nutrient):
-                    longest_nutrient = keyword
-            
-            if longest_nutrient:
-                # 移除營養素部分，剩下的就是蔬菜名稱
-                veg_name = nutrient_name.replace(longest_nutrient, "").strip()
-                if veg_name:
-                    veg_result = get_vegetables_by_name_or_alias(veg_name)
-                    if veg_result and isinstance(veg_result, list) and len(veg_result) > 0:
-                        # 找到蔬菜，查詢該蔬菜的特定營養素資訊
-                        nutrient_matches, _ = get_nutrient_columns_from_db(longest_nutrient)
-                        if nutrient_matches:
-                            actual_nutrient_column, found_nutrient_name = nutrient_matches[0]
-                            
-                            # 查詢該蔬菜的特定營養素數值
-                            conn = get_db_connection()
-                            if conn:
-                                try:
-                                    cursor = conn.cursor()
-                                    veg_id = veg_result[0]['id']
-                                    query = f"SELECT {actual_nutrient_column} FROM vege_nutrition WHERE vege_id = %s"
-                                    cursor.execute(query, (veg_id,))
-                                    result = cursor.fetchone()
-                                    if result and result[0] is not None:
-                                        nutrient_value = result[0]
-                                        unit = actual_nutrient_column.split('_')[-1] if '_' in actual_nutrient_column else ''
-                                        
-                                        # 更新蔬菜資訊
-                                        for veg in veg_result:
-                                            veg['nutrient_name'] = found_nutrient_name
-                                            veg['nutrient_value'] = nutrient_value
-                                            veg['unit'] = unit
-                                except Exception as e:
-                                    print(f"Error querying specific nutrient: {e}")
-                                finally:
-                                    conn.close()
-                        if redis_conn:
-                            try:
-                                redis_conn.set(cache_key, json.dumps(veg_result, default=str), ex=3600)
-                                print(f"快取寫入 (SET) - Key: {cache_key}")
-                            except Exception as e:
-                                print(f"寫入 Redis 失敗: {e}")
-                        return veg_result
+        nutrient_check, _ = get_nutrient_columns_from_db(word)
+        if nutrient_check and len(nutrient_check) > 0:
+            potential_nutrient_words.append({'word': word, 'data': nutrient_check})
+
+    # === 路徑 A: 精準查詢 (找到一個蔬菜和至少一個營養素) ===
+    if len(potential_veg_words) == 1 and len(potential_nutrient_words) > 0:
+        veg_info = potential_veg_words[0]['data']
+        nutrient_query_str = " ".join([n['word'] for n in potential_nutrient_words])
+        nutrient_matches, _ = get_nutrient_columns_from_db(nutrient_query_str)
         
-        # 如果複合查詢處理失敗，繼續原有的營養素查詢邏輯
-    
-    # 使用正規表達式拆分輸入字串，分隔符為逗號、空格或頓號
-    nutrient_queries = re.split(r'[,，\s]', nutrient_name)
-    nutrient_queries = [q.strip() for q in nutrient_queries if q.strip()]
+        if nutrient_matches:
+            actual_nutrient_column, found_nutrient_name = nutrient_matches[0]
+            all_nutrients = veg_info.get('all_nutrients', {})
+            nutrient_value = all_nutrients.get(actual_nutrient_column)
+            unit = actual_nutrient_column.split('_')[-1] if '_' in actual_nutrient_column else ''
+            
+            veg_info['nutrient_name'] = found_nutrient_name
+            veg_info['nutrient_value'] = nutrient_value
+            veg_info['unit'] = unit
+            
+            final_result = [veg_info]
 
-    if not nutrient_queries:
-        return "錯誤：無效的營養成分輸入。"
+            if redis_conn:
+                try:
+                    redis_conn.set(cache_key, json.dumps(final_result, default=str), ex=3600)
+                    print(f"快取寫入 (SET) [精準查詢] - Key: {cache_key}")
+                except Exception as e:
+                    print(f"寫入 Redis 失敗: {e}")
+            
+            return final_result
 
+    # === 【新增判斷路徑】路徑 B: 單一蔬菜通用資訊查詢 ===
+    if len(potential_veg_words) == 1 and len(potential_nutrient_words) == 0:
+        # 直接回傳 get_vegetables_by_name_or_alias 找到的蔬菜資訊
+        final_result = [potential_veg_words[0]['data']]
+        
+        if redis_conn:
+            try:
+                redis_conn.set(cache_key, json.dumps(final_result, default=str), ex=3600)
+                print(f"快取寫入 (SET) [單一蔬菜查詢] - Key: {cache_key}")
+            except Exception as e:
+                print(f"寫入 Redis 失敗: {e}")
+        
+        return final_result
+
+    # === 路徑 C: 後備的排名查詢 ===
     conn = get_db_connection()
     if conn is None:
         return "錯誤：無法連接資料庫。"
 
     try:
         cursor = conn.cursor()
-        grouped_results = {}  # 按營養成分分組的結果
-
-        # 針對每一個拆分後的查詢詞進行處理
-        for query_term in nutrient_queries:
-            # 呼叫函式，獲取所有匹配的營養成分
-            nutrient_matches, error_message = get_nutrient_columns_from_db(query_term)
+        grouped_results = {}
+        
+        nutrient_matches, error_message = get_nutrient_columns_from_db(query_string)
+        
+        if error_message and not nutrient_matches:
+            return f"找不到與 '{query_string}' 相關的有效數據。"
             
-            if error_message:
-                print(f"DEBUG: {error_message}")
+        for actual_nutrient_column, found_nutrient_name in nutrient_matches:
+            # (此處的排名查詢邏輯保持不變)
+            if found_nutrient_name in grouped_results:
                 continue
             
-            # 針對每一個匹配的營養成分，都進行一次查詢
-            for actual_nutrient_column, found_nutrient_name in nutrient_matches:
-                print(f"DEBUG: 正在查詢營養成分: {found_nutrient_name}")
-                
-                # 如果這個營養成分已經處理過，跳過
-                if found_nutrient_name in grouped_results:
-                    continue
-                
-                # 1. 查詢 vege_nutrition，找出該營養成分含量最高的三項
-                query_nutrition = f"""
-                    SELECT vege_id, {actual_nutrient_column}, *
-                    FROM vege_nutrition
-                    ORDER BY {actual_nutrient_column} DESC
-                    LIMIT 3;
-                """
-                cursor.execute(query_nutrition)
-                nutrition_rows = cursor.fetchall()
-                
-                if not nutrition_rows:
-                    continue
+            query_nutrition = f"""
+                SELECT vege_id, {actual_nutrient_column}, *
+                FROM vege_nutrition
+                WHERE {actual_nutrient_column} IS NOT NULL
+                ORDER BY {actual_nutrient_column} DESC
+                LIMIT 3;
+            """
+            cursor.execute(query_nutrition)
+            nutrition_rows = cursor.fetchall()
 
-                col_names = [desc[0] for desc in cursor.description]
+            if not nutrition_rows: continue
 
-                vege_ids = [row[col_names.index('vege_id')] for row in nutrition_rows]
-                
-                # 2. 獲取所有相關 vege_id 的中文名稱和別名
-                query_basic = "SELECT id, vege_name FROM basic_vege WHERE id = ANY(%s);"
-                cursor.execute(query_basic, (vege_ids,))
-                basic_vege_rows = cursor.fetchall()
-                vege_id_to_name = {row[0]: row[1] for row in basic_vege_rows}
+            col_names = [desc[0] for desc in cursor.description]
+            vege_ids = [row[col_names.index('vege_id')] for row in nutrition_rows]
+            
+            query_basic = "SELECT id, vege_name FROM basic_vege WHERE id = ANY(%s);"
+            cursor.execute(query_basic, (vege_ids,))
+            basic_vege_rows = cursor.fetchall()
+            vege_id_to_name = {row[0]: row[1] for row in basic_vege_rows}
 
-                query_alias = "SELECT vege_id, alias FROM vege_alias WHERE vege_id = ANY(%s) AND type NOT IN ('羅馬拼音', '錯字');"
-                cursor.execute(query_alias, (vege_ids,))
-                alias_rows = cursor.fetchall()
-                vege_id_to_aliases = {}
-                for row in alias_rows:
-                    vege_id, alias = row
-                    if vege_id not in vege_id_to_aliases:
-                        vege_id_to_aliases[vege_id] = []
-                    vege_id_to_aliases[vege_id].append(alias)
+            query_alias = "SELECT vege_id, alias FROM vege_alias WHERE vege_id = ANY(%s) AND type NOT IN ('羅馬拼音', '錯字');"
+            cursor.execute(query_alias, (vege_ids,))
+            alias_rows = cursor.fetchall()
+            vege_id_to_aliases = {}
+            for row in alias_rows:
+                vege_id, alias = row
+                if vege_id not in vege_id_to_aliases:
+                    vege_id_to_aliases[vege_id] = []
+                vege_id_to_aliases[vege_id].append(alias)
 
-                # 3. 格式化結果並按營養成分分組
-                nutrient_results = []
-                for row in nutrition_rows:
-                    row_dict = dict(zip(col_names, row))
-                    veg_id = row_dict['vege_id']
-                    chinese_name = vege_id_to_name.get(veg_id, f"未知蔬菜 (ID: {veg_id})")
-                    aliases = vege_id_to_aliases.get(veg_id, [])
-                    nutrient_value = row_dict.get(actual_nutrient_column)
-                    unit = actual_nutrient_column.split('_')[-1] if '_' in actual_nutrient_column else ''
+            nutrient_results = []
+            for row in nutrition_rows:
+                row_dict = dict(zip(col_names, row))
+                veg_id = row_dict['vege_id']
+                nutrient_value = row_dict.get(actual_nutrient_column)
+                unit = actual_nutrient_column.split('_')[-1] if '_' in actual_nutrient_column else ''
 
-                    all_nutrients_data = {k: v for k, v in row_dict.items() if k != 'vege_id'}
-
-                    nutrient_results.append({
-                        "id": veg_id,
-                        "chinese_name": chinese_name,
-                        "nutrient_name": found_nutrient_name,
-                        "nutrient_value": nutrient_value,
-                        "unit": unit,
-                        "aliases": aliases,
-                        "all_nutrients": all_nutrients_data
-                    })
-                
-                # 將結果按營養成分名稱分組
-                grouped_results[found_nutrient_name] = nutrient_results
+                nutrient_results.append({
+                    "id": veg_id,
+                    "chinese_name": vege_id_to_name.get(veg_id, f"未知蔬菜 (ID: {veg_id})"),
+                    "nutrient_name": found_nutrient_name,
+                    "nutrient_value": nutrient_value,
+                    "unit": unit,
+                    "aliases": vege_id_to_aliases.get(veg_id, []),
+                    "all_nutrients": {k: v for k, v in row_dict.items() if k != 'vege_id'}
+                })
+            
+            grouped_results[found_nutrient_name] = nutrient_results
 
         if not grouped_results:
-            return f"找不到與 '{nutrient_name}' 相關的有效數據。"
+            return f"找不到與 '{query_string}' 相關的有效數據。"
         
-        # 將分組結果轉換為列表格式，保持向後相容性
         final_results_list = []
-        for nutrient_name, results in grouped_results.items():
+        for results in grouped_results.values():
             final_results_list.extend(results)
+        
         if redis_conn:
             try:
                 redis_conn.set(cache_key, json.dumps(final_results_list, default=str), ex=3600)
-                print(f"快取寫入 (SET) - Key: {cache_key}")
+                print(f"快取寫入 (SET) [排名查詢] - Key: {cache_key}")
             except Exception as e:
                 print(f"寫入 Redis 失敗: {e}")
+        
         return final_results_list
     except Exception as e:
         print(f"Database query failed: {e}")
