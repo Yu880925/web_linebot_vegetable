@@ -23,6 +23,7 @@ from redis_client import get_redis_connection
 import io
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
+from linebot.v3.messaging import PushMessageRequest
 from linebot.v3.messaging.models import (
     CameraAction,
     CameraRollAction,
@@ -135,7 +136,81 @@ def get_db_connection():
 
 
 
-# ... (其他 import 和函式)
+def handle_push_notification(data):
+    """
+    根據從資料庫收到的通知資料，發送 LINE 推播訊息給所有使用者。
+    """
+    # 從通知資料中提取相關資訊
+    vege_id = data.get('vege_id')
+    predict_price = data.get('predict_price')
+    predict_date = data.get('predict_date')
+    target_date = data.get('target_date')
+
+    if not vege_id or predict_price is None:
+        app.logger.error("Invalid notification data: Missing vege_id or predict_price.")
+        return
+
+    # 取得資料庫中所有使用者
+    try:
+        all_users = get_all_users()
+        if not all_users:
+            app.logger.info("No users found in the database. Notification skipped.")
+            return
+    except Exception as e:
+        app.logger.error(f"Failed to get all users: {e}")
+        app.logger.error(traceback.format_exc())
+        return
+
+    # 逐一發送推播訊息給所有使用者
+    for user_data in all_users:
+        user_id = user_data.get('line_user_id')
+        user_name = user_data.get('name', '朋友') # 如果沒有名稱，預設為「朋友」
+        
+        # 根據資料建立要推播的個人化訊息內容
+        push_message_text = f"哈囉，{user_name}！\n\n預測通知：{predict_date} 預測 {target_date} 的蔬菜價格為 {predict_price} 元。"
+        
+        push_message_request = PushMessageRequest(
+            to=user_id,
+            messages=[TextMessage(text=push_message_text)]
+        )
+        
+        try:
+            # 假設 messaging_api 已經初始化
+            messaging_api.push_message(push_message_request)
+            app.logger.info(f"Successfully sent personalized push message to user {user_id}")
+        except Exception as e:
+            app.logger.error(f"Failed to send push message to user {user_id}: {e}")
+            app.logger.error(traceback.format_exc())
+
+def get_all_users():
+    """
+    從資料庫查詢所有用戶的 ID 和名稱。
+    """
+    conn = get_db_connection()
+    if not conn:
+        app.logger.error("無法建立資料庫連線")
+        return []
+
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        sql_query = """
+        SELECT
+            line_user_id,
+            name
+        FROM
+            users;
+        """
+        cur.execute(sql_query)
+        # 取得所有用戶的 ID 和名稱列表
+        all_users = [dict(row) for row in cur.fetchall()]
+        return all_users
+    except Exception as e:
+        app.logger.error(f"查詢所有用戶時發生錯誤: {e}")
+        app.logger.error(traceback.format_exc())
+        return []
+    finally:
+        if conn:
+            conn.close()
 
 def listen_for_notifications():
     """
@@ -188,6 +263,8 @@ def listen_for_notifications():
         if conn:
             conn.close()
             app.logger.info("Database listener connection closed.")
+
+
 
 # MinIO 客戶端設定
 def get_minio_client():
@@ -1773,7 +1850,7 @@ def handle_text_message(event):
                             
                             if not found_local_data:
                                 combined_query = " ".join(keywords) + " 價格"
-                                messages_to_reply.append(TextMessage(text=f"抱歉，本地資料庫找不到「{keywords[0]}」的價格資訊。我正在為您進行線上搜尋..."))
+                                messages_to_reply.append(TextMessage(text=f"抱歉，菜菜子目前沒有學這麼多。正在為您進行線上搜尋..."))
                                 
                                 search_result_message = perform_llm_web_search(combined_query)
                                 if search_result_message:
@@ -1808,7 +1885,7 @@ def handle_text_message(event):
                         
                         if not found_local_data:
                             if combined_query:
-                                 messages_to_reply.append(TextMessage(text=f"本地資料庫找不到相關資訊，正在為您進行線上搜尋..."))
+                                 messages_to_reply.append(TextMessage(text=f"抱歉，菜菜子目前沒有學這麼多，正在為您進行線上搜尋..."))
                                  search_result_message = perform_llm_web_search(combined_query)
                                  if search_result_message:
                                     messages_to_reply.append(search_result_message)
@@ -1841,7 +1918,7 @@ def handle_text_message(event):
 
                         if not found_structured_data:
                             query_string = event.message.text
-                            messages_to_reply.append(TextMessage(text="我正在為您進行線上搜尋食譜，請稍候片刻..."))
+                            messages_to_reply.append(TextMessage(text="菜菜子正在為您進行線上搜尋食譜，請稍候片刻..."))
                             
                             search_result_message = perform_llm_web_search(query_string)
                             if search_result_message:
@@ -1863,14 +1940,82 @@ def handle_text_message(event):
                         if not found_local_data:
                             query_text = veg_name if veg_name else text
                             combined_query = f"{query_text} 產季"
-                            messages_to_reply.append(TextMessage(text=f"抱歉，本地資料庫找不到關於「{query_text}」的資訊。我正在為您進行線上搜尋..."))
+                            messages_to_reply.append(TextMessage(text=f"抱歉，目前沒有學這麼多。我正在為您進行線上搜尋..."))
 
                             search_result_message = perform_llm_web_search(combined_query)
                             if search_result_message:
                                 messages_to_reply.append(search_result_message)
                     
+
+
+                    elif intent == "web_search":
+                        payload = llm_payload.get("payload", {})
+                        results = payload.get("results", [])
+                        if not results:
+                            messages_to_reply.append(TextMessage(text="線上搜尋未找到相關結果。"))
+                        else:
+                            # --- 開始建立 Flex Message ---
+                            bubble_contents = [
+                                FlexText(
+                                    text="雖然不是我的主修，但為您線上搜尋到以下資訊",
+                                    weight="bold",
+                                    size="md",
+                                    margin="md",
+                                    align="center"
+                                ),
+                                FlexSeparator(margin="lg")
+                            ]
+
+                            for i, item in enumerate(results):
+                                title = item.get("title", "無標題")
+                                link = item.get("link", "#")
+
+                                result_box = FlexBox(
+                                    layout="vertical",
+                                    margin="lg",
+                                    spacing="sm",
+                                    contents=[
+                                        FlexText(
+                                            text=title,
+                                            wrap=True,
+                                            weight="bold",
+                                            size="sm",
+                                            color="#1E90FF",
+                                            action=URIAction(uri=link)
+                                        ),
+                                        FlexText(
+                                            text=link.split('/')[2] if link != "#" else "",
+                                            wrap=True,
+                                            size="xs",
+                                            color="#aaaaaa",
+                                            margin="md"
+                                        )
+                                    ],
+                                    action=URIAction(uri=link)
+                                )
+                                bubble_contents.append(result_box)
+
+                                if i < len(results) - 1:
+                                    bubble_contents.append(FlexSeparator(margin="lg"))
+
+                            bubble = FlexBubble(
+                                body=FlexBox(layout="vertical", contents=bubble_contents)
+                            )
+
+                            messages_to_reply.append(
+                                FlexMessage(
+                                    alt_text=f"關於「{text}」的搜尋結果",
+                                    contents=bubble
+                                )
+                            )
+
+                    elif intent == "other":
+                        messages_to_reply.append(TextMessage(text="抱歉，菜菜子不清楚您的意思。您可以試著說『高麗菜的價格』或『高麗菜的營養』。"))
+
+
+                    
                     else:
-                        messages_to_reply.append(TextMessage(text="抱歉，我不清楚您的意思。您可以試著說『高麗菜的價格』或『高麗菜的營養』。"))
+                        messages_to_reply.append(TextMessage(text="抱歉，菜菜子不清楚您的意思。您可以試著說『高麗菜的價格』或『高麗菜的營養』。"))
 
                 except requests.exceptions.RequestException as e:
                     app.logger.error(f"呼叫 fast API 失敗: {e}")
@@ -2214,49 +2359,11 @@ def _create_grouped_nutrient_flex_message(veg_data_list, alt_text_prefix):
 
     return all_flex_messages
 
-# 新增: 處理推播邏輯的函式
-from linebot.v3.messaging import PushMessageRequest
-
-def handle_push_notification(data):
-    """
-    根據從資料庫收到的通知資料，發送 LINE 推播訊息。
-    """
-    # 這裡的邏輯需要根據您的資料庫 payload 來設計
-    # 假設您的 payload 包含 'user_id' 和 'message'
-    user_id = data.get('user_id')
-    push_message_text = data.get('message')
-
-    if not user_id or not push_message_text:
-        app.logger.error("Missing user_id or message in notification data.")
-        return
-
-    # 您也可以在這裡根據資料庫資料查詢更複雜的訊息內容
-    # 例如: 從資料庫查詢特定蔬菜的價格變動
-    
-    # 建立 LINE Bot 推播訊息
-    push_message_request = PushMessageRequest(
-        to=user_id,
-        messages=[TextMessage(text=push_message_text)]
-    )
-    
-    # 建立 Line Messaging API 客戶端
-    # 您檔案中已有這部分程式碼
-    # configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
-    # api_client = ApiClient(configuration)
-    # messaging_api = MessagingApi(api_client)
-
-    try:
-        # 發送推播訊息
-        messaging_api.push_message(push_message_request)
-        app.logger.info(f"Successfully sent push message to user {user_id}")
-    except Exception as e:
-        app.logger.error(f"Failed to send push message to user {user_id}: {e}")
-        app.logger.error(traceback.format_exc())
 
 
 if __name__ == "__main__":
     # 啟動監聽執行緒
-    listener_thread = threading.Thread(target=listen_for_notifications)
+    listener_thread = threading.Thread(target=handle_push_notification)
     listener_thread.daemon = True # 設定為 daemon 執行緒，讓它在主程式結束時自動終止
     listener_thread.start()
 
