@@ -2019,7 +2019,7 @@ def get_recent_price_info(veg_id):
         if not row: return None
         vege_name = row['vege_name']
 
-        cur.execute("SELECT alias FROM vege_alias WHERE vege_id = %s", (veg_id,))
+        cur.execute("SELECT alias FROM vege_alias WHERE vege_id = %s AND type NOT IN ('羅馬拼音', '錯字')", (veg_id,))
         aliases = [r['alias'] for r in cur.fetchall()]
 
         # 使用 DISTINCT ON 取得最新的價格和漲跌幅

@@ -486,7 +486,32 @@ def get_vegetables_by_name_or_alias(search_term: str, **kwargs):
         vege_details = {row[0]: {'chinese_name': row[1]} for row in basic_vege_rows}
 
         # 獲取營養資訊
-        query_nutrition = "SELECT * FROM vege_nutrition WHERE vege_id = ANY(%s);"
+        query_nutrition = """
+            SELECT
+                id,
+                calories_kcal,
+                water_g,
+                protein_g,
+                fat_g,
+                carbs_g,
+                fiber_g,
+                sugar_g,
+                sodium_mg,
+                potassium_mg,
+                calcium_mg,
+                magnesium_mg,
+                iron_mg,
+                zinc_mg,
+                phosphorus_mg,
+                vitamin_a_iu,
+                vitamin_c_mg,
+                vitamin_e_mg,
+                vitamin_b1_mg,
+                folic_acid_ug,
+                vege_id,
+            FROM vege_nutrition
+            WHERE vege_id = ANY(%s);
+        """
         cursor.execute(query_nutrition, (matched_vege_ids,))
         nutrition_cols = [desc[0] for desc in cursor.description]
         nutrition_rows = cursor.fetchall()
