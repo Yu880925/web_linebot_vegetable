@@ -23,7 +23,6 @@ from redis_client import get_redis_connection
 import io
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
-from linebot.v3.messaging import PushMessageRequest
 from linebot.v3.messaging.models import (
     CameraAction,
     CameraRollAction,
@@ -45,7 +44,7 @@ from linebot.v3.messaging.models import (
     ImageCarouselColumn,
     URIAction,
     PostbackAction,
-    FlexSeparator, # <--- 引入分隔線元件
+    FlexSeparator,
 )
 from linebot.v3.webhook import WebhookHandler
 from linebot.v3.webhooks.models import (
@@ -136,81 +135,7 @@ def get_db_connection():
 
 
 
-def handle_push_notification(data):
-    """
-    根據從資料庫收到的通知資料，發送 LINE 推播訊息給所有使用者。
-    """
-    # 從通知資料中提取相關資訊
-    vege_id = data.get('vege_id')
-    predict_price = data.get('predict_price')
-    predict_date = data.get('predict_date')
-    target_date = data.get('target_date')
-
-    if not vege_id or predict_price is None:
-        app.logger.error("Invalid notification data: Missing vege_id or predict_price.")
-        return
-
-    # 取得資料庫中所有使用者
-    try:
-        all_users = get_all_users()
-        if not all_users:
-            app.logger.info("No users found in the database. Notification skipped.")
-            return
-    except Exception as e:
-        app.logger.error(f"Failed to get all users: {e}")
-        app.logger.error(traceback.format_exc())
-        return
-
-    # 逐一發送推播訊息給所有使用者
-    for user_data in all_users:
-        user_id = user_data.get('line_user_id')
-        user_name = user_data.get('name', '朋友') # 如果沒有名稱，預設為「朋友」
-        
-        # 根據資料建立要推播的個人化訊息內容
-        push_message_text = f"哈囉，{user_name}！\n\n預測通知：{predict_date} 預測 {target_date} 的蔬菜價格為 {predict_price} 元。"
-        
-        push_message_request = PushMessageRequest(
-            to=user_id,
-            messages=[TextMessage(text=push_message_text)]
-        )
-        
-        try:
-            # 假設 messaging_api 已經初始化
-            messaging_api.push_message(push_message_request)
-            app.logger.info(f"Successfully sent personalized push message to user {user_id}")
-        except Exception as e:
-            app.logger.error(f"Failed to send push message to user {user_id}: {e}")
-            app.logger.error(traceback.format_exc())
-
-def get_all_users():
-    """
-    從資料庫查詢所有用戶的 ID 和名稱。
-    """
-    conn = get_db_connection()
-    if not conn:
-        app.logger.error("無法建立資料庫連線")
-        return []
-
-    try:
-        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        sql_query = """
-        SELECT
-            line_user_id,
-            name
-        FROM
-            users;
-        """
-        cur.execute(sql_query)
-        # 取得所有用戶的 ID 和名稱列表
-        all_users = [dict(row) for row in cur.fetchall()]
-        return all_users
-    except Exception as e:
-        app.logger.error(f"查詢所有用戶時發生錯誤: {e}")
-        app.logger.error(traceback.format_exc())
-        return []
-    finally:
-        if conn:
-            conn.close()
+# ... (其他 import 和函式)
 
 def listen_for_notifications():
     """
@@ -263,8 +188,6 @@ def listen_for_notifications():
         if conn:
             conn.close()
             app.logger.info("Database listener connection closed.")
-
-
 
 # MinIO 客戶端設定
 def get_minio_client():
@@ -376,282 +299,175 @@ def get_image(image_name):
 # ... (其他程式碼不變)
 @app.route('/api/vegetables', methods=['GET'])
 def get_vegetables():
-    import random
+    """【修改】改為從 price_status 讀取最新的價格，而不是僅限今天"""
     conn = get_db_connection()
-    if conn is None:
-        return jsonify({'error': '無法連接資料庫'}), 500
+    if conn is None: return jsonify({'error': '無法連接資料庫'}), 500
 
     try:
-        cur = conn.cursor()
-        # 取得每個蔬菜的最新價格與對應的預測價格
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        # 使用子查詢和 DISTINCT ON 來取得每種蔬菜的最新價格
         sql = """
         SELECT
-            bv.id,
-            bv.vege_name,
-            dap.avg_price_per_kg,
-            dap."ObsTime" AS latest_obstime,
-            pp.predict_price
-        FROM
-            basic_vege bv
-        LEFT JOIN LATERAL (
-            SELECT avg_price_per_kg, "ObsTime"
-            FROM daily_avg_price
-            WHERE vege_id = bv.id AND avg_price_per_kg IS NOT NULL
-            ORDER BY "ObsTime" DESC
-            LIMIT 1
-        ) dap ON TRUE
-        LEFT JOIN price_predictions pp
-            ON pp.vege_id = bv.id
-            AND pp.target_date = dap."ObsTime" + INTERVAL '7 day'
+            bv.id, bv.vege_name, ps.latest_price, ps.price_change, ps.updated_at AS latest_obstime
+        FROM basic_vege bv
+        LEFT JOIN (
+            SELECT DISTINCT ON (vege_id) *
+            FROM price_status
+            ORDER BY vege_id, updated_at DESC
+        ) AS ps ON bv.id = ps.vege_id
         ORDER BY bv.vege_name;
         """
         cur.execute(sql)
         rows = cur.fetchall()
 
         veg_list = []
-        for veg_id, veg_name, avg_price_per_kg, latest_obstime, predict_price in rows:
-            season_string = get_vegetable_seasons(veg_id)
-
-            # 取得近 30 筆歷史價格（由舊到新）
+        for row in rows:
             price_history = []
             try:
-                cur_hist = conn.cursor()
-                cur_hist.execute(
-                    """
-                    SELECT avg_price_per_kg
-                    FROM daily_avg_price
-                    WHERE vege_id = %s AND avg_price_per_kg IS NOT NULL
-                    ORDER BY "ObsTime" DESC
-                    LIMIT 30
-                    """,
-                    (veg_id,)
-                )
-                hist_rows = cur_hist.fetchall()
-                # 轉為 list 並反轉為由舊到新，符合前端圖表呈現
-                price_history_desc = [float(r[0]) for r in hist_rows if r[0] is not None]
-                price_history = list(reversed(price_history_desc))
+                cur.execute("SELECT avg_price_per_kg FROM daily_avg_price WHERE vege_id = %s AND avg_price_per_kg IS NOT NULL ORDER BY \"ObsTime\" DESC LIMIT 30", (row['id'],))
+                hist_rows = cur.fetchall()
+                price_history = list(reversed([float(r[0]) for r in hist_rows if r[0] is not None]))
             except Exception as e:
-                app.logger.error(f"Error fetching price history for veg_id={veg_id}: {e}")
-                price_history = []
+                app.logger.error(f"Error fetching price history for veg_id={row['id']}: {e}")
 
-            # 當前價格
-            current_price = float(avg_price_per_kg) if avg_price_per_kg is not None else None
-
-            # 價格變動：使用預測相對於目前價格
-            if current_price is not None and predict_price is not None:
-                try:
-                    change_pct = ((float(predict_price) - current_price) / current_price) * 100.0
-                    price_change = f"{'+' if change_pct >= 0 else ''}{change_pct:.1f}%"
-                except Exception:
-                    price_change = "N/A"
-            else:
-                price_change = "N/A"
+            price_change_val = row['price_change']
+            price_change_str = f"{'+' if price_change_val >= 0 else ''}{price_change_val:.1f}%" if price_change_val is not None else "N/A"
 
             veg_list.append({
-                'id': veg_id,
-                'name': veg_name,
-                'description': f"新鮮{veg_name}，營養豐富，是您餐桌上的最佳選擇。",
-                'season': season_string,
-                'priceChange': price_change,
-                'currentPrice': current_price,
-                'latestObsTime': latest_obstime.isoformat() if latest_obstime else None,
-                'image': f"/api/image/{veg_name}.jpg",
+                'id': row['id'], 'name': row['vege_name'],
+                'description': f"新鮮{row['vege_name']}，營養豐富。",
+                'season': get_vegetable_seasons(row['id']),
+                'priceChange': price_change_str,
+                'currentPrice': float(row['latest_price']) if row['latest_price'] is not None else None,
+                'latestObsTime': row['latest_obstime'].isoformat() if row['latest_obstime'] else None,
+                'image': f"/api/image/{row['vege_name']}.jpg",
                 'priceHistory': price_history,
-                'nutrition': {
-                    '熱量': random.randint(15, 50),
-                    '纖維': round(random.uniform(1, 5), 1),
-                    '維生素C': random.randint(10, 100),
-                    '維生素A': random.randint(0, 500),
-                    '鐵質': round(random.uniform(0.3, 3), 1),
-                    '鈣質': random.randint(10, 150)
-                }
+                'nutrition': {} 
             })
-
         return jsonify(veg_list)
-
     except Exception as e:
         app.logger.error(f"Error fetching vegetables: {e}")
         return jsonify({'error': str(e)}), 500
     finally:
-        if conn:
-            cur.close()
-            conn.close()
+        if conn: conn.close()
 
+
+# app.py
 
 @app.route('/api/vegetables/<int:veg_id>', methods=['GET'])
 def get_vegetable_detail(veg_id):
-    import random
+    """【修改】改為從 price_status 讀取最新的價格，而不是僅限今天"""
     conn = get_db_connection()
-    if conn is None:
-        return jsonify({'error': '無法連接資料庫'}), 500
+    if conn is None: return jsonify({'error': '無法連接資料庫'}), 500
 
     try:
-        cur = conn.cursor()
-        # 最新價格與預測價格
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        # 同樣使用子查詢取得最新的價格資訊
         cur.execute(
             """
-            SELECT
-                b.id,
-                b.vege_name,
-                dap.avg_price_per_kg,
-                dap."ObsTime" AS latest_obstime,
-                pp.predict_price
+            SELECT b.id, b.vege_name, ps.latest_price, ps.price_change, ps.updated_at
             FROM basic_vege b
-            LEFT JOIN LATERAL (
-                SELECT avg_price_per_kg, "ObsTime"
-                FROM daily_avg_price
-                WHERE vege_id = b.id AND avg_price_per_kg IS NOT NULL
-                ORDER BY "ObsTime" DESC
-                LIMIT 1
-            ) dap ON TRUE
-            LEFT JOIN price_predictions pp
-                ON pp.vege_id = b.id
-                AND pp.target_date = dap."ObsTime" + INTERVAL '7 day'
+            LEFT JOIN (
+                SELECT DISTINCT ON (vege_id) *
+                FROM price_status
+                WHERE vege_id = %s
+                ORDER BY vege_id, updated_at DESC
+            ) AS ps ON b.id = ps.vege_id
             WHERE b.id = %s
-            """,
-            (veg_id,)
+            """, (veg_id, veg_id,)
         )
         row = cur.fetchone()
-        if not row:
-            return jsonify({'error': '找不到蔬菜'}), 404
+        if not row: return jsonify({'error': '找不到蔬菜'}), 404
 
-        veg_id_db, veg_name, avg_price_per_kg, latest_obstime, predict_price = row
-
-        # 價格歷史（近 30 筆，由舊到新）
         price_history = []
         try:
-            cur.execute(
-                """
-                SELECT avg_price_per_kg
-                FROM daily_avg_price
-                WHERE vege_id = %s AND avg_price_per_kg IS NOT NULL
-                ORDER BY "ObsTime" DESC
-                LIMIT 30
-                """,
-                (veg_id,)
-            )
-            hist_rows = cur.fetchall()
-            price_history_desc = [float(r[0]) for r in hist_rows if r[0] is not None]
-            price_history = list(reversed(price_history_desc))
+            cur.execute("SELECT avg_price_per_kg FROM daily_avg_price WHERE vege_id = %s AND avg_price_per_kg IS NOT NULL ORDER BY \"ObsTime\" DESC LIMIT 30", (veg_id,))
+            price_history = list(reversed([float(r[0]) for r in cur.fetchall() if r[0] is not None]))
         except Exception as e:
             app.logger.error(f"Error fetching price history for veg_id={veg_id}: {e}")
-            price_history = []
 
-        # 當前價格
-        current_price = float(avg_price_per_kg) if avg_price_per_kg is not None else None
-        # 價格變動
-        if current_price is not None and predict_price is not None:
-            try:
-                change_pct = ((float(predict_price) - current_price) / current_price) * 100.0
-                price_change = f"{'+' if change_pct >= 0 else ''}{change_pct:.1f}%"
-            except Exception:
-                price_change = "N/A"
-        else:
-            price_change = "N/A"
-
-        season_string = get_vegetable_seasons(veg_id)
+        price_change_val = row['price_change']
+        price_change_str = f"{'+' if price_change_val >= 0 else ''}{price_change_val:.1f}%" if price_change_val is not None else "N/A"
+        
+        nutrition_data = { '熱量': 15, '纖維': 1.5, '維生素C': 50, '維生素A': 100, '鐵質': 0.5, '鈣質': 20 }
 
         vegetable = {
-            'id': veg_id_db,
-            'name': veg_name,
-            'description': f"新鮮{veg_name}，營養豐富，是您餐桌上的最佳選擇。",
-            'season': season_string,
-            'priceChange': price_change,
-            'currentPrice': current_price,
-            'image': f"/api/image/{veg_name}.jpg",
-            'imageUrl': f"/api/image/{veg_name}.jpg",
+            'id': row['id'], 'name': row['vege_name'],
+            'description': f"新鮮{row['vege_name']}，營養豐富。",
+            'season': get_vegetable_seasons(veg_id),
+            'priceChange': price_change_str,
+            'currentPrice': float(row['latest_price']) if row['latest_price'] is not None else None,
+            'image': f"/api/image/{row['vege_name']}.jpg",
+            'imageUrl': f"/api/image/{row['vege_name']}.jpg",
             'priceHistory': price_history,
-            'nutrition': {
-                '熱量': random.randint(15, 50),
-                '纖維': round(random.uniform(1, 5), 1),
-                '維生素C': random.randint(10, 100),
-                '維生素A': random.randint(0, 500),
-                '鐵質': round(random.uniform(0.3, 3), 1),
-                '鈣質': random.randint(10, 150)
-            }
+            'nutrition': nutrition_data
         }
         return jsonify(vegetable)
-
     except Exception as e:
         app.logger.error(f"Error fetching vegetable detail: {e}")
         return jsonify({'error': str(e)}), 500
     finally:
-        if conn:
-            cur.close()
-            conn.close()
+        if conn: conn.close()
 
+
+# app.py
 
 @app.route('/api/price', methods=['POST'])
 def get_price_by_ids():
+    """【修改】修正此函式以解決別名和漲跌預測的資料格式問題，並取得最新價格。"""
     ids = request.json.get('ids', [])
-    if not ids:
-        return jsonify({'error': '請提供蔬菜id列表'}), 400
+    if not ids: return jsonify({'error': '請提供蔬菜id列表'}), 400
     conn = get_db_connection()
-    if conn is None:
-        return jsonify({'error': '無法連接資料庫'}), 500
+    if conn is None: return jsonify({'error': '無法連接資料庫'}), 500
+    
     try:
-        cur = conn.cursor()
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        # 使用子查詢取得最新價格，並 JOIN 別名
         sql = """
         SELECT
-            bv.id,
-            bv.vege_name,
-            dap.avg_price_per_kg,
-            dap."ObsTime" AS latest_obstime,
-            va.alias,
-            pp.predict_price,
-            pp.target_date
-        FROM
-            basic_vege bv
-        LEFT JOIN LATERAL (
-            SELECT avg_price_per_kg, "ObsTime"
-            FROM daily_avg_price
-            WHERE vege_id = bv.id AND avg_price_per_kg IS NOT NULL
-            ORDER BY "ObsTime" DESC
-            LIMIT 1
-        ) dap ON TRUE
-        LEFT JOIN vege_alias va
-            ON va.vege_id = bv.id AND va.similarity_weight = 1
-        LEFT JOIN price_predictions pp
-            ON pp.vege_id = bv.id
-            AND pp.target_date = dap."ObsTime" + INTERVAL '7 day'
-        WHERE bv.id IN %s
+            bv.id, bv.vege_name,
+            ps.latest_price, ps.price_change, ps.updated_at,
+            array_agg(va.alias) FILTER (WHERE va.alias IS NOT NULL) as aliases
+        FROM basic_vege bv
+        LEFT JOIN vege_alias va ON bv.id = va.vege_id
+        LEFT JOIN (
+            SELECT DISTINCT ON (vege_id) *
+            FROM price_status
+            WHERE vege_id = ANY(%s)
+            ORDER BY vege_id, updated_at DESC
+        ) AS ps ON bv.id = ps.vege_id
+        WHERE bv.id = ANY(%s)
+        GROUP BY bv.id, ps.latest_price, ps.price_change, ps.updated_at;
         """
-        cur.execute(sql, (tuple(ids),))
+        cur.execute(sql, (ids, ids,))
         rows = cur.fetchall()
-        veg_dict = {}
+        
+        veg_list = []
         for row in rows:
-            veg_id, vege_name, avg_price_per_kg, latest_obstime, alias, predict_price, target_date = row
-            
-            if veg_id not in veg_dict:
-                price_change = None
-                if avg_price_per_kg and predict_price:
-                    price_change = round((predict_price - avg_price_per_kg) / avg_price_per_kg * 100, 2)
-                latest_obs_str = latest_obstime.isoformat() if latest_obstime else None
-                predict_target_str = target_date.isoformat() if target_date else None
-                
-                veg_dict[veg_id] = {
-                    'id': veg_id,
-                    'name': vege_name,
-                    'aliases': [],  # <<< 修正點：將 key 從 'alias' 改為 'aliases'
-                    'currentPrice': float(avg_price_per_kg) if avg_price_per_kg else None,
-                    'priceChange': price_change,
-                    'latestObsTime': latest_obs_str,
-                    'predictTargetDate': predict_target_str,
-                    'image': f"{os.getenv('url_9000')}/veg-data-bucket/images/{vege_name}.jpg"
-                }
+            price_change_val = row['price_change']
+            price_trend = None
+            if price_change_val is not None:
+                if price_change_val > 0: price_trend = "上漲"
+                elif price_change_val < 0: price_trend = "下跌"
+                else: price_trend = "持平"
 
-            if alias and alias not in veg_dict[veg_id]['aliases']:
-                veg_dict[veg_id]['aliases'].append(alias) # <<< 修正點：對應上面的 key 修改
-
-        veg_list = list(veg_dict.values())
+            veg_list.append({
+                'id': row['id'],
+                'name': row['vege_name'],
+                'aliases': row['aliases'] or [],
+                'currentPrice': float(row['latest_price']) if row['latest_price'] else None,
+                'latestObsTime': row['updated_at'].isoformat() if row['updated_at'] else None,
+                'image': f"/api/image/{row['vege_name']}.jpg",
+                'predicted_change_pct': price_change_val,
+                'price_trend': price_trend,
+            })
+        
         return jsonify(veg_list)
     except Exception as e:
-        app.logger.error(f"Error fetching vegetables: {e}")
+        app.logger.error(f"Error fetching prices by IDs: {e}")
         return jsonify({'error': str(e)}), 500
     finally:
-        if conn:
-            cur.close()
-            conn.close()
+        if conn: conn.close()
 
 
 @app.route('/api/recipes/<int:veg_id>', methods=['GET'])
@@ -739,70 +555,45 @@ def get_current_season():
 
 
 
-def get_seasonal_vegetables():
-    """查詢當季最便宜的前三種蔬菜"""
-    conn = get_db_connection()
-    if not conn:
-        app.logger.error("無法建立資料庫連線")
-        return []
+# app.py
 
-    seasonal_veges = []
+def get_seasonal_vegetables():
+    """【修改】改為從 price_status 讀取最新價格，並透過 GROUP BY 解決重複蔬菜問題"""
+    conn = get_db_connection()
+    if not conn: return []
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-
         current_month = datetime.datetime.now().month
         month_column = f"fresh_month_{current_month:02d}"
-        app.logger.info(f"正在查詢月份欄位: {month_column}")
-
-        # === 修改後的 SQL 查詢 START ===
-        # 修正1: JOIN 的資料表改為 daily_avg_price
-        # 修正2: JOIN 的條件改為 b.id = p.vege_id
-        # 修正3: 使用子查詢，透過 DISTINCT ON 和 ORDER BY ObsTime DESC 取得每種蔬菜最新的一筆價格
+        
+        # 1. 使用 GROUP BY 確保每個蔬菜只出現一次
+        # 2. 使用 (array_agg(...))[1] 來取得一個代表性的別名
+        # 3. 套用問題一的修正，JOIN 最新的價格資訊
         query = f"""
             SELECT
                 b.id,
                 b.vege_name,
-                a.alias,
-                p.avg_price_per_kg
-            FROM
-                basic_vege AS b
-            LEFT JOIN
-                vege_alias AS a ON b.id = a.vege_id AND a.similarity_weight = 1
+                (array_agg(a.alias))[1] AS alias,
+                ps.latest_price AS avg_price_per_kg
+            FROM basic_vege AS b
+            LEFT JOIN vege_alias AS a ON b.id = a.vege_id AND a.similarity_weight = 1
             LEFT JOIN (
-                SELECT DISTINCT ON (vege_id)
-                    vege_id,
-                    avg_price_per_kg
-                FROM
-                    daily_avg_price
-                ORDER BY
-                    vege_id, "ObsTime" DESC
-            ) AS p ON b.id = p.vege_id
-            WHERE
-                b.{month_column} = 1
-            ORDER BY
-                p.avg_price_per_kg ASC NULLS LAST, b.vege_name
+                SELECT DISTINCT ON (vege_id) *
+                FROM price_status
+                ORDER BY vege_id, updated_at DESC
+            ) AS ps ON b.id = ps.vege_id
+            WHERE b.{month_column} = 1
+            GROUP BY b.id, b.vege_name, ps.latest_price
+            ORDER BY ps.latest_price ASC NULLS LAST, b.vege_name
             LIMIT 3;
         """
-        # === 修改後的 SQL 查詢 END ===
-
-        app.logger.info(f"執行的 SQL 查詢: {query}")
         cur.execute(query)
-        results = cur.fetchall()
-        
-        seasonal_veges = [dict(row) for row in results]
-        app.logger.info(f"從資料庫查詢到 {len(seasonal_veges)} 筆當季蔬菜。")
-        
-        return seasonal_veges
-
-    except psycopg2.Error as e:
-        app.logger.error(f"查詢當季蔬菜時發生資料庫錯誤: {e}")
-        return []
+        return [dict(row) for row in cur.fetchall()]
     except Exception as e:
-        app.logger.error(f"查詢當季蔬菜時發生未知錯誤: {e}")
+        app.logger.error(f"查詢當季蔬菜時發生錯誤: {e}")
         return []
     finally:
-        if conn:
-            conn.close()
+        if conn: conn.close()
 
 
 def get_recipes_by_vege_id(vege_id):
@@ -1031,27 +822,13 @@ def _create_vegetable_flex_message(
             else "無別名"
         )
         all_nutrients_detail = []
-        
-        # ### 舊邏輯 (遍歷字典並用索引值跳過) ###
-        # for i, (nutrient_key, nutrient_value) in enumerate(
-        #     veg_data["all_nutrients"].items()
-        # ):
-        #     if i < 2:
-        #         continue
-        #     if i >= 7:
-        #         break
-        
-        ### 新邏輯 (遍歷字典並用 key 名稱跳過) ###
-        displayed_nutrient_count = 0
-        for nutrient_key, nutrient_value in veg_data["all_nutrients"].items():
-            # 明確跳過 'name_in_nutrition' 欄位
-            if nutrient_key == "name_in_nutrition":
+        for i, (nutrient_key, nutrient_value) in enumerate(
+            veg_data["all_nutrients"].items()
+        ):
+            if i < 2:
                 continue
-            
-            # 維持最多只顯示5個營養素的邏輯
-            if displayed_nutrient_count >= 5:
+            if i >= 7:
                 break
-
             display_name = NUTRIENT_DISPLAY_MAPPING.get(nutrient_key, "")
             if not display_name:
                 display_name = nutrient_key.split("_")[0].capitalize()
@@ -1074,7 +851,6 @@ def _create_vegetable_flex_message(
             all_nutrients_detail.append(
                 f"{display_name}：{nutrient_value_display}{current_unit}"
             )
-            displayed_nutrient_count += 1 # 增加計數器
 
         all_nutrients_text = "營養資訊(每100 克可食部分)：\n" + "\n".join(
             all_nutrients_detail
@@ -1084,6 +860,13 @@ def _create_vegetable_flex_message(
             FlexText(
                 text=aliases_text, size="sm", color="#aaaaaa", wrap=True, margin="sm"
             ),
+            # FlexText(
+            #     text=all_nutrients_text,
+            #     size="sm",
+            #     color="#555555",
+            #     wrap=True,
+            #     margin="md",
+            # ),
         ]
         if (
             is_nutrient_search
@@ -1099,18 +882,20 @@ def _create_vegetable_flex_message(
                     margin="md",
                 ),
             )
+        # ⭐ 新增：如果提供了信心度，就將其加入卡片內容
         if confidence is not None:
             bubble_body_contents.insert(
-                1, 
+                1, # 插在菜名後面
                 FlexText(
                     text=f"預測信心指數：{confidence*100:.1f}%",
                     size="md",
-                    color="#1E90FF",
+                    color="#1E90FF", # 使用不同顏色突顯
                     weight="bold",
                     margin="md"
                 )
             )
 
+        # 加入營養資訊
         bubble_body_contents.append(FlexText(
             text=all_nutrients_text,
             size="sm",
@@ -1127,8 +912,9 @@ def _create_vegetable_flex_message(
         image_url = f"{flex_image_url}/veg-data-bucket/images/{image_filename}"
 
         footer_buttons = []
-        if not is_nutrient_search:
+        if not is_nutrient_search: # 辨識圖片的結果
             encoded_veg_name = urllib.parse.quote(veg_data['chinese_name'])
+            # 按鈕 1: 我想了解這個更多！
             footer_buttons.append(
                 FlexButton(
                     style="primary",
@@ -1141,6 +927,7 @@ def _create_vegetable_flex_message(
                     ),
                 )
             )
+            # 按鈕 2: 看起來不太像…
             footer_buttons.append(
                 FlexButton(
                     style="secondary",
@@ -1152,8 +939,10 @@ def _create_vegetable_flex_message(
                     ),
                 )
             )
+        # 營養查詢或文字搜尋的結果
         else:
             encoded_veg_name = urllib.parse.quote(veg_data['chinese_name'])
+            # 只顯示「我想了解這個更多！」按鈕
             footer_buttons.append(
                 FlexButton(
                     style="primary",
@@ -1627,81 +1416,57 @@ def try_handle_price_text_query(text):
 
 
 
-def perform_llm_web_search(prompt: str):
+def perform_llm_web_search(prompt: str) -> str:
     """
-    【修改】呼叫 LLM 服務進行網頁搜尋，並回傳一個包含可點擊標題列表的 Flex Message。
+    呼叫外部 LLM 服務執行網頁搜尋，並格式化回傳結果。
     """
     app.logger.info(f"Performing LLM web search for prompt: {prompt}")
     try:
+        # 取得 LLM 服務的 URL，並指定 /route 端點
         llm_api_url = os.getenv("FAST_API_URL", "http://localhost:8000")
         search_endpoint = f"{llm_api_url}"
-        payload = {"mode": "web_search_only", "prompt": prompt, "top_k": 5}
+
+        # 根據使用者提供的格式建立 payload
+        payload = {
+            "mode": "web_search_only",
+            "prompt": prompt,
+            "top_k": 5
+        }
 
         response = requests.post(search_endpoint, json=payload, timeout=20)
         response.raise_for_status()
+
         data = response.json()
-
-        if "payload" in data and "results" in data.get("payload", {}):
-            results = data["payload"]["results"]
+        
+        # 解析使用者指定的回應格式
+        if data.get("result") and data["result"].get("status") == "ok":
+            results = data["result"].get("results", [])
             if not results:
-                return TextMessage(text="線上搜尋未找到相關結果。")
+                return "線上搜尋未找到相關結果。"
 
-            # --- 開始建立 Flex Message ---
-            bubble_contents = [
-                FlexText(text="為您線上搜尋到以下資訊", weight="bold", size="md", margin="md", align="center"),
-                FlexSeparator(margin="lg")
-            ]
-
+            # 格式化搜尋結果
+            formatted_results = ["為您線上搜尋到以下資訊："]
             for i, item in enumerate(results):
                 title = item.get("title", "無標題")
                 link = item.get("link", "#")
-
-                # 為每個結果建立一個可點擊的區塊
-                result_box = FlexBox(
-                    layout="vertical",
-                    margin="lg",
-                    spacing="sm",
-                    contents=[
-                        FlexText(
-                            text=title,
-                            wrap=True,
-                            weight="bold",
-                            size="sm",
-                            color="#1E90FF",  # 模擬超連結的藍色
-                            action=URIAction(uri=link) # 讓文字本身也可點擊
-                        ),
-                        FlexText(
-                            text=link.split('/')[2],  # 擷取並顯示網域，增加可信度
-                            wrap=True,
-                            size="xs",
-                            color="#aaaaaa",
-                            margin="md"
-                        )
-                    ],
-                    action=URIAction(uri=link)  # 讓整個區塊都可點擊
-                )
-                bubble_contents.append(result_box)
-
-                # 在項目之間加入分隔線
-                if i < len(results) - 1:
-                    bubble_contents.append(FlexSeparator(margin="lg"))
-
-            bubble = FlexBubble(body=FlexBox(layout="vertical", contents=bubble_contents))
-            return FlexMessage(alt_text=f"關於「{prompt}」的搜尋結果", contents=bubble)
-
+                formatted_results.append(f"{i+1}. {title}\n   {link}")
+            
+            return "\n\n".join(formatted_results)
         else:
-            app.logger.error(f"LLM service returned an unexpected format: {data}")
-            return TextMessage(text="抱歉，線上搜尋服務的回應格式不正確。")
+            # 處理 LLM 回報錯誤的狀況
+            error_message = data.get("result", {}).get("error", "未知的 LLM 錯誤")
+            app.logger.error(f"LLM service returned an error: {error_message}")
+            return f"線上搜尋時發生錯誤：{error_message}"
 
     except requests.exceptions.Timeout:
         app.logger.error(f"LLM service call timed out for prompt: {prompt}")
-        return TextMessage(text="抱歉，線上搜尋服務超時，請稍後再試。")
+        return "抱歉，線上搜尋服務超時，請稍後再試。"
     except requests.exceptions.RequestException as e:
         app.logger.error(f"LLM service call failed: {e}")
-        return TextMessage(text="抱歉，線上搜尋服務目前無法連線。")
-    except json.JSONDecodeError:
-        app.logger.error(f"Failed to parse LLM response: {response.text}")
-        return TextMessage(text="抱歉，無法解析線上搜尋服務的回應。")
+        return "抱歉，線上搜尋服務目前無法連線。"
+    except (KeyError, json.JSONDecodeError) as e:
+        app.logger.error(f"Failed to parse LLM response: {e}")
+        return "抱歉，無法解析線上搜尋服務的回應。"
 
 
 
@@ -1788,7 +1553,6 @@ def handle_text_message(event):
             else:
                 messages_to_reply.append(TextMessage(text="哎呀，菜菜子目前找不到符合條件的當季蔬菜資訊耶！"))
 
-        # 步驟 2: 如果沒有匹配到固定關鍵字，則進行處理
         else:
             # === 新增邏輯: 優先進行蔬菜模糊搜尋 ===
             vegetable_details = get_vegetables_by_name_or_alias(text)
@@ -1808,8 +1572,8 @@ def handle_text_message(event):
                 else:
                     # 即使找到蔬菜，也可能沒有價格，給予使用者提示
                     messages_to_reply.append(TextMessage(text=f"找到了蔬菜「{veg_name}」，但目前沒有它的價格資訊喔。"))
-            
-            # 如果模糊搜尋沒有結果，才執行原本的 LLM 邏輯
+
+            # 步驟 2: 如果沒有匹配到固定關鍵字，才交給 LLM 處理
             else:
                 fast_api_url = os.getenv("FAST_API_URL", "http://localhost:8000") 
                 try:
@@ -1821,7 +1585,7 @@ def handle_text_message(event):
                     
                     print(f"LLM Intent: {intent}, Keywords: {keywords}")
                     
-                    # --- LLM 意圖處理 (此部分邏輯維持不變) ---
+                    # --- LLM 意圖處理 ---
                     if intent == "price":
                         if keywords:
                             veg_name = keywords[0]
@@ -1847,14 +1611,15 @@ def handle_text_message(event):
                                             found_local_data = True
                                 except requests.exceptions.RequestException as e:
                                     app.logger.error(f"呼叫 /api/price 失敗: {e}")
+                                    # 讓 found_local_data 保持 False 以觸發後續的網頁搜尋
                             
                             if not found_local_data:
                                 combined_query = " ".join(keywords) + " 價格"
-                                messages_to_reply.append(TextMessage(text=f"抱歉，菜菜子目前沒有學這麼多。正在為您進行線上搜尋..."))
+                                messages_to_reply.append(TextMessage(text=f"抱歉，本地資料庫找不到「{keywords[0]}」的價格資訊。我正在為您進行線上搜尋..."))
                                 
-                                search_result_message = perform_llm_web_search(combined_query)
-                                if search_result_message:
-                                    messages_to_reply.append(search_result_message)
+                                # 【修改】使用新的輔助函式進行網頁搜尋
+                                search_result_text = perform_llm_web_search(combined_query)
+                                messages_to_reply.append(TextMessage(text=search_result_text))
 
                     elif intent == "nutrition":
                         found_local_data = False
@@ -1885,10 +1650,10 @@ def handle_text_message(event):
                         
                         if not found_local_data:
                             if combined_query:
-                                 messages_to_reply.append(TextMessage(text=f"抱歉，菜菜子目前沒有學這麼多，正在為您進行線上搜尋..."))
-                                 search_result_message = perform_llm_web_search(combined_query)
-                                 if search_result_message:
-                                    messages_to_reply.append(search_result_message)
+                                messages_to_reply.append(TextMessage(text=f"本地資料庫找不到相關資訊，正在為您進行線上搜尋..."))
+                                # 【修改】使用新的輔助函式進行網頁搜尋
+                                search_result_text = perform_llm_web_search(combined_query)
+                                messages_to_reply.append(TextMessage(text=search_result_text))
                             else:
                                 messages_to_reply.append(TextMessage(text="請提供想查詢的蔬菜或營養素名稱。"))
 
@@ -1918,11 +1683,11 @@ def handle_text_message(event):
 
                         if not found_structured_data:
                             query_string = event.message.text
-                            messages_to_reply.append(TextMessage(text="菜菜子正在為您進行線上搜尋食譜，請稍候片刻..."))
+                            messages_to_reply.append(TextMessage(text="我正在為您進行線上搜尋食譜，請稍候片刻..."))
                             
-                            search_result_message = perform_llm_web_search(query_string)
-                            if search_result_message:
-                                messages_to_reply.append(search_result_message)
+                            # 【修改】使用新的輔助函式進行網頁搜尋
+                            search_result_text = perform_llm_web_search(query_string)
+                            messages_to_reply.append(TextMessage(text=search_result_text))
 
                     elif intent == "當季蔬菜月份":
                         found_local_data = False
@@ -1940,13 +1705,11 @@ def handle_text_message(event):
                         if not found_local_data:
                             query_text = veg_name if veg_name else text
                             combined_query = f"{query_text} 產季"
-                            messages_to_reply.append(TextMessage(text=f"抱歉，目前沒有學這麼多。我正在為您進行線上搜尋..."))
+                            messages_to_reply.append(TextMessage(text=f"抱歉，本地資料庫找不到關於「{query_text}」的資訊。我正在為您進行線上搜尋..."))
 
-                            search_result_message = perform_llm_web_search(combined_query)
-                            if search_result_message:
-                                messages_to_reply.append(search_result_message)
-                    
-
+                            # 【修改】使用新的輔助函式進行網頁搜尋
+                            search_result_text = perform_llm_web_search(combined_query)
+                            messages_to_reply.append(TextMessage(text=search_result_text))
 
                     elif intent == "web_search":
                         payload = llm_payload.get("payload", {})
@@ -2011,11 +1774,9 @@ def handle_text_message(event):
 
                     elif intent == "other":
                         messages_to_reply.append(TextMessage(text="抱歉，菜菜子不清楚您的意思。您可以試著說『高麗菜的價格』或『高麗菜的營養』。"))
-
-
                     
                     else:
-                        messages_to_reply.append(TextMessage(text="抱歉，菜菜子不清楚您的意思。您可以試著說『高麗菜的價格』或『高麗菜的營養』。"))
+                        messages_to_reply.append(TextMessage(text="抱歉，我不清楚您的意思。您可以試著說『高麗菜的價格』或『高麗菜的營養』。"))
 
                 except requests.exceptions.RequestException as e:
                     app.logger.error(f"呼叫 fast API 失敗: {e}")
@@ -2076,8 +1837,6 @@ def handle_prediction():
         return jsonify({"error": "伺服器內部錯誤，無法辨識圖片"}), 500
 
 
-# app.py
-
 def _create_price_bubble(price_info):
     """
     (內部輔助函式) 根據單一蔬菜的價格資訊，建立一個 FlexBubble。
@@ -2090,8 +1849,21 @@ def _create_price_bubble(price_info):
     veg_id = price_info.get('id')
     veg_name = price_info.get('name')
     aliases = price_info.get('aliases', [])
-    current_price = price_info.get('currentPrice') or price_info.get('current_price')
-    change_pct = price_info.get('predicted_change_pct')
+    current_price = float(price_info.get('currentPrice') or price_info.get('current_price'))
+    
+    # === FIX START ===
+    # The original value might be a string, number, or None. We must safely convert it to a float.
+    change_pct_raw = price_info.get('predicted_change_pct')
+    change_pct = None
+    if change_pct_raw is not None:
+        try:
+            # Attempt to convert the value to a float for comparison and formatting.
+            change_pct = float(change_pct_raw)
+        except (ValueError, TypeError):
+            # If conversion fails, it remains None, and the logic below will handle it.
+            app.logger.warning(f"Could not convert predicted_change_pct '{change_pct_raw}' to float.")
+    # === FIX END ===
+            
     trend = price_info.get('price_trend')
 
     alias_text = f"別名：{', '.join(aliases)}" if aliases else "無主要別名"
@@ -2100,10 +1872,12 @@ def _create_price_bubble(price_info):
     else:
         price_text = "目前暫無平均報價"
 
+    # Now, the comparison and formatting will work correctly with the float value.
     if trend and change_pct is not None:
-        pred_text = f"未來一週漲跌預測：{trend} {'+' if change_pct >= 0 else ''}{change_pct:.2f}%"
+        sign = "+" if change_pct >= 0 else ""
+        pred_text = f"未來漲跌預測：{trend} {sign}{change_pct:.2f}%"
     else:
-        pred_text = "未來一週漲跌預測：暫無預測資料"
+        pred_text = "未來漲跌預測：暫無預測資料"
 
     flex_image_url = os.getenv("url_9000")
     image_filename = urllib.parse.quote(f"{veg_name}.jpg")
@@ -2235,94 +2009,48 @@ def create_multi_price_flex_carousel(price_info_list, alt_text="蔬菜價格資�
 
 
 def get_recent_price_info(veg_id):
-	"""查詢指定蔬菜的近期價格與預測資訊"""
-	conn = get_db_connection()
-	if conn is None:
-		return None
-	try:
-		cur = conn.cursor()
-		# 菜名
-		cur.execute("SELECT vege_name FROM basic_vege WHERE id = %s", (veg_id,))
-		row = cur.fetchone()
-		if not row:
-			return None
-		vege_name = row[0]
+    """【修改】改為讀取最新的價格，而不是僅限今天"""
+    conn = get_db_connection()
+    if conn is None: return None
+    try:
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+        cur.execute("SELECT vege_name FROM basic_vege WHERE id = %s", (veg_id,))
+        row = cur.fetchone()
+        if not row: return None
+        vege_name = row['vege_name']
 
-		# 主要別名（similarity_weight = 1）
-		cur.execute(
-			"""
-			SELECT alias
-			FROM vege_alias
-			WHERE vege_id = %s AND similarity_weight = 1
-			""",
-			(veg_id,)
-		)
-		alias_rows = cur.fetchall()
-		aliases = [r[0] for r in alias_rows if r and r[0]]
+        cur.execute("SELECT alias FROM vege_alias WHERE vege_id = %s", (veg_id,))
+        aliases = [r['alias'] for r in cur.fetchall()]
 
-		# 最近兩筆價格（最新與昨日）
-		cur.execute(
-			"""
-			SELECT avg_price_per_kg, "ObsTime"
-			FROM daily_avg_price
-			WHERE vege_id = %s AND avg_price_per_kg IS NOT NULL
-			ORDER BY "ObsTime" DESC
-			LIMIT 2
-			""",
-			(veg_id,)
-		)
-		price_rows = cur.fetchall()
-		current_price = None
-		latest_obstime = None
-		yesterday_price = None
-		if price_rows:
-			current_price = float(price_rows[0][0]) if price_rows[0][0] is not None else None
-			latest_obstime = price_rows[0][1]
-			if len(price_rows) > 1 and price_rows[1][0] is not None:
-				yesterday_price = float(price_rows[1][0])
+        # 使用 DISTINCT ON 取得最新的價格和漲跌幅
+        cur.execute("""
+            SELECT latest_price, price_change 
+            FROM price_status 
+            WHERE vege_id = %s 
+            ORDER BY updated_at DESC 
+            LIMIT 1
+        """, (veg_id,))
+        price_row = cur.fetchone()
+        
+        current_price, price_change_val = (price_row['latest_price'], price_row['price_change']) if price_row else (None, None)
+        
+        price_trend = None
+        if price_change_val is not None:
+            if price_change_val > 0: price_trend = "上漲"
+            elif price_change_val < 0: price_trend = "下跌"
+            else: price_trend = "持平"
 
-		# 未來第七天的預測價格
-		predict_price = None
-		if latest_obstime is not None:
-			cur.execute(
-				"""
-				SELECT predict_price
-				FROM price_predictions
-				WHERE vege_id = %s AND target_date = %s + INTERVAL '7 day'
-				LIMIT 1
-				""",
-				(veg_id, latest_obstime)
-			)
-			pred_row = cur.fetchone()
-			if pred_row and pred_row[0] is not None:
-				predict_price = float(pred_row[0])
-
-		predicted_change_pct = None
-		price_trend = None
-		if predict_price is not None and yesterday_price is not None and yesterday_price != 0:
-			predicted_change_pct = round((predict_price - yesterday_price) / yesterday_price * 100, 2)
-			if predicted_change_pct > 0:
-				price_trend = "上漲"
-			elif predicted_change_pct < 0:
-				price_trend = "下跌"
-			else:
-				price_trend = "持平"
-
-		return {
-			'id': veg_id,
-			'name': vege_name,
-			'aliases': aliases,
-			'current_price': current_price,
-			'predicted_change_pct': predicted_change_pct,
-			'price_trend': price_trend,
-		}
-	except Exception as e:
-		app.logger.error(f"Error fetching recent price info for veg_id={veg_id}: {e}")
-		return None
-	finally:
-		if conn:
-			cur.close()
-			conn.close()
+        return {
+            'id': veg_id, 'name': vege_name, 'aliases': aliases,
+            'current_price': float(current_price) if current_price is not None else None,
+            'predicted_change_pct': price_change_val,
+            'price_trend': price_trend,
+        }
+    except Exception as e:
+        app.logger.error(f"Error fetching recent price info for veg_id={veg_id}: {e}")
+        return None
+    finally:
+        if conn: conn.close()
 
 def _create_grouped_nutrient_flex_message(veg_data_list, alt_text_prefix):
     """
@@ -2359,14 +2087,51 @@ def _create_grouped_nutrient_flex_message(veg_data_list, alt_text_prefix):
 
     return all_flex_messages
 
+# 新增: 處理推播邏輯的函式
+from linebot.v3.messaging import PushMessageRequest, TextMessage
+
+def handle_push_notification(data):
+    """
+    根據從資料庫收到的通知資料，發送 LINE 推播訊息。
+    """
+    # 這裡的邏輯需要根據您的資料庫 payload 來設計
+    # 假設您的 payload 包含 'user_id' 和 'message'
+    user_id = data.get('user_id')
+    push_message_text = data.get('message')
+
+    if not user_id or not push_message_text:
+        app.logger.error("Missing user_id or message in notification data.")
+        return
+
+    # 您也可以在這裡根據資料庫資料查詢更複雜的訊息內容
+    # 例如: 從資料庫查詢特定蔬菜的價格變動
+    
+    # 建立 LINE Bot 推播訊息
+    push_message_request = PushMessageRequest(
+        to=user_id,
+        messages=[TextMessage(text=push_message_text)]
+    )
+    
+    # 建立 Line Messaging API 客戶端
+    # 您檔案中已有這部分程式碼
+    # configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
+    # api_client = ApiClient(configuration)
+    # messaging_api = MessagingApi(api_client)
+
+    try:
+        # 發送推播訊息
+        messaging_api.push_message(push_message_request)
+        app.logger.info(f"Successfully sent push message to user {user_id}")
+    except Exception as e:
+        app.logger.error(f"Failed to send push message to user {user_id}: {e}")
+        app.logger.error(traceback.format_exc())
 
 
 if __name__ == "__main__":
-    # 啟動監聽執行緒
-    listener_thread = threading.Thread(target=handle_push_notification)
-    listener_thread.daemon = True # 設定為 daemon 執行緒，讓它在主程式結束時自動終止
+    # 【修正】修正執行緒的 target
+    listener_thread = threading.Thread(target=listen_for_notifications)
+    listener_thread.daemon = True
     listener_thread.start()
 
-    # 啟動 Flask Web 伺服器
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, threaded=True)
