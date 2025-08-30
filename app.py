@@ -299,60 +299,100 @@ def get_image(image_name):
 # ... (其他程式碼不變)
 @app.route('/api/vegetables', methods=['GET'])
 def get_vegetables():
-    """【修改】改為從 price_status 讀取最新的價格，而不是僅限今天"""
     conn = get_db_connection()
     if conn is None: return jsonify({'error': '無法連接資料庫'}), 500
 
     try:
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-        # 使用子查詢和 DISTINCT ON 來取得每種蔬菜的最新價格
+        # 使用 CTE (Common Table Expressions) 將多個查詢合併為一個
         sql = """
-        SELECT
-            bv.id, bv.vege_name, ps.latest_price, ps.price_change, ps.updated_at AS latest_obstime
-        FROM basic_vege bv
-        LEFT JOIN (
-            SELECT DISTINCT ON (vege_id) *
+        WITH LatestPrice AS (
+            -- 1. 取得每種蔬菜的最新價格
+            SELECT DISTINCT ON (vege_id)
+                vege_id, latest_price, price_change, updated_at
             FROM price_status
             ORDER BY vege_id, updated_at DESC
-        ) AS ps ON bv.id = ps.vege_id
+        ),
+        PriceHistory AS (
+            -- 2. 取得每種蔬菜近30天的價格歷史，並聚合成一個 JSON 陣列
+            SELECT
+                vege_id,
+                jsonb_agg(avg_price_per_kg ORDER BY "ObsTime" ASC) as history
+            FROM (
+                SELECT
+                    vege_id, avg_price_per_kg, "ObsTime",
+                    ROW_NUMBER() OVER(PARTITION BY vege_id ORDER BY "ObsTime" DESC) as rn
+                FROM daily_avg_price
+                WHERE avg_price_per_kg IS NOT NULL
+            ) sub
+            WHERE rn <= 30
+            GROUP BY vege_id
+        ),
+        Seasons AS (
+            -- 3. 計算每種蔬菜的季節字串
+            SELECT
+                id as vege_id,
+                -- 使用 CASE WHEN 和 STRING_AGG 來建立季節字串
+                ARRAY_TO_STRING(
+                    ARRAY[
+                        CASE WHEN fresh_month_03 = 1 OR fresh_month_04 = 1 OR fresh_month_05 = 1 THEN '春季' ELSE NULL END,
+                        CASE WHEN fresh_month_06 = 1 OR fresh_month_07 = 1 OR fresh_month_08 = 1 THEN '夏季' ELSE NULL END,
+                        CASE WHEN fresh_month_09 = 1 OR fresh_month_10 = 1 OR fresh_month_11 = 1 THEN '秋季' ELSE NULL END,
+                        CASE WHEN fresh_month_12 = 1 OR fresh_month_01 = 1 OR fresh_month_02 = 1 THEN '冬季' ELSE NULL END
+                    ], ','
+                ) as season_str
+            FROM basic_vege
+        )
+        -- 4. 主查詢，將所有資料 JOIN 在一起
+        SELECT
+            bv.id,
+            bv.vege_name,
+            lp.latest_price,
+            lp.price_change,
+            lp.updated_at AS latest_obstime,
+            COALESCE(ph.history, '[]'::jsonb) as price_history,
+            COALESCE(s.season_str, '全年') as season
+        FROM basic_vege bv
+        LEFT JOIN LatestPrice lp ON bv.id = lp.vege_id
+        LEFT JOIN PriceHistory ph ON bv.id = ph.vege_id
+        LEFT JOIN Seasons s ON bv.id = s.vege_id
         ORDER BY bv.vege_name;
         """
         cur.execute(sql)
         rows = cur.fetchall()
-
+        
+        # 取得 MinIO 的公開 URL，一次性處理
+        minio_endpoint = os.getenv("url_9000")
+        bucket_name = os.getenv("MINIO_BUCKET_NAME")
+        
         veg_list = []
         for row in rows:
-            price_history = []
-            try:
-                cur.execute("SELECT avg_price_per_kg FROM daily_avg_price WHERE vege_id = %s AND avg_price_per_kg IS NOT NULL ORDER BY \"ObsTime\" DESC LIMIT 30", (row['id'],))
-                hist_rows = cur.fetchall()
-                price_history = list(reversed([float(r[0]) for r in hist_rows if r[0] is not None]))
-            except Exception as e:
-                app.logger.error(f"Error fetching price history for veg_id={row['id']}: {e}")
-
             price_change_val = row['price_change']
             price_change_str = f"{'+' if price_change_val >= 0 else ''}{price_change_val:.1f}%" if price_change_val is not None else "N/A"
+            
+            # 【優化】直接組合 MinIO 的公開 URL，不再經過 Flask
+            image_url = f"{minio_endpoint}/{bucket_name}/images/{row['vege_name']}.jpg"
 
             veg_list.append({
-                'id': row['id'], 'name': row['vege_name'],
+                'id': row['id'],
+                'name': row['vege_name'],
                 'description': f"新鮮{row['vege_name']}，營養豐富。",
-                'season': get_vegetable_seasons(row['id']),
+                'season': row['season'],
                 'priceChange': price_change_str,
                 'currentPrice': float(row['latest_price']) if row['latest_price'] is not None else None,
                 'latestObsTime': row['latest_obstime'].isoformat() if row['latest_obstime'] else None,
-                'image': f"/api/image/{row['vege_name']}.jpg",
-                'priceHistory': price_history,
-                'nutrition': {} 
+                'image': image_url, # 【優化】使用直連 URL
+                'priceHistory': [float(p) for p in row['price_history']],
+                'nutrition': {}
             })
         return jsonify(veg_list)
     except Exception as e:
         app.logger.error(f"Error fetching vegetables: {e}")
+        app.logger.error(traceback.format_exc()) # 印出更詳細的錯誤
         return jsonify({'error': str(e)}), 500
     finally:
         if conn: conn.close()
 
-
-# app.py
 
 @app.route('/api/vegetables/<int:veg_id>', methods=['GET'])
 def get_vegetable_detail(veg_id):
