@@ -389,7 +389,19 @@ def get_vegetable_detail(veg_id):
         price_change_val = row['price_change']
         price_change_str = f"{'+' if price_change_val >= 0 else ''}{price_change_val:.1f}%" if price_change_val is not None else "N/A"
         
-        nutrition_data = { '熱量': 15, '纖維': 1.5, '維生素C': 50, '維生素A': 100, '鐵質': 0.5, '鈣質': 20 }
+        nutrition_data = {}
+        try:
+            cur.execute("SELECT * FROM vege_nutrition WHERE vege_id = %s", (veg_id,))
+            nutrition_row = cur.fetchone()
+            if nutrition_row:
+                # 遍歷 NUTRIENT_DISPLAY_MAPPING 來建立 nutrition_data
+                for db_col, display_name in NUTRIENT_DISPLAY_MAPPING.items():
+                    if db_col in nutrition_row and nutrition_row[db_col] is not None:
+                        nutrition_data[display_name] = float(nutrition_row[db_col])
+        except Exception as e:
+            app.logger.error(f"Error fetching nutrition data for veg_id={veg_id}: {e}")
+            # 即使查詢失敗，也回傳一個空物件，避免前端出錯
+            nutrition_data = {}
 
         vegetable = {
             'id': row['id'], 'name': row['vege_name'],
@@ -1558,7 +1570,7 @@ def handle_text_message(event):
             vegetable_details = get_vegetables_by_name_or_alias(text)
             
             # 如果模糊搜尋有結果，就顯示價格資訊
-            if vegetable_details:
+            if vegetable_details and isinstance(vegetable_details, list):
                 veg_id = vegetable_details[0]['id']
                 veg_name = vegetable_details[0]['chinese_name']
                 
@@ -1773,7 +1785,36 @@ def handle_text_message(event):
                             )
 
                     elif intent == "other":
-                        messages_to_reply.append(TextMessage(text="抱歉，菜菜子不清楚您的意思。您可以試著說『高麗菜的價格』或『高麗菜的營養』。"))
+                        # 取得 LLM 回傳的關鍵字
+                        keywords = llm_payload.get("payload", {}).get("keywords", [])
+                        
+                        # 如果有關鍵字，就用它來做模糊搜尋
+                        if keywords:
+                            search_term = keywords[0]
+                            vegetable_details = get_vegetables_by_name_or_alias(search_term)
+                            
+                            # 如果模糊搜尋有結果，就顯示價格資訊
+                            if vegetable_details and isinstance(vegetable_details, list):
+                                veg_id = vegetable_details[0]['id']
+                                veg_name = vegetable_details[0]['chinese_name']
+                                
+                                price_info = get_recent_price_info(veg_id)
+                                if price_info:
+                                    messages_to_reply.append(TextMessage(text=f"菜菜子找到了「{veg_name}」的價格資訊給你參考！"))
+                                    # 使用 create_multi_price_flex_carousel 函式建立卡片
+                                    flex_message = create_multi_price_flex_carousel([price_info])
+                                    if flex_message:
+                                        messages_to_reply.append(flex_message)
+                                else:
+                                    # 即使找到蔬菜，也可能沒有價格，給予使用者提示
+                                    messages_to_reply.append(TextMessage(text=f"找到了蔬菜「{veg_name}」，但目前沒有它的價格資訊喔。"))
+                            else:
+                                # 如果關鍵字模糊搜尋也找不到，才回覆預設訊息
+                                messages_to_reply.append(TextMessage(text="抱歉，菜菜子不清楚您的意思。您可以試著說『高麗菜的價格』或『高麗菜的營養』。"))
+                        else:
+                            # 如果 LLM 連關鍵字都沒給，就回覆預設訊息
+                            messages_to_reply.append(TextMessage(text="抱歉，菜菜子不清楚您的意思。您可以試著說『高麗菜的價格』或『高麗菜的營養』。"))
+
                     
                     else:
                         messages_to_reply.append(TextMessage(text="抱歉，我不清楚您的意思。您可以試著說『高麗菜的價格』或『高麗菜的營養』。"))

@@ -249,7 +249,9 @@ function generateVegetablesData() {
 
         return {
             id: index + 1, name, image: `/api/image/${name}.jpg`, description: `新鮮${name}，營養豐富，是您餐桌上的最佳選擇。`,
-            nutrition: { '熱量': Math.round(15 + Math.random() * 35), '纖維': Math.round((1 + Math.random() * 4) * 10) / 10, '維生素C': Math.round(10 + Math.random() * 90), '維生素A': Math.round(Math.random() * 500), '鐵質': Math.round((0.3 + Math.random() * 2.7) * 10) / 10, '鈣質': Math.round(10 + Math.random() * 140) },
+            // === 修改：移除假的營養數據，改為空物件，與 API 總覽頁的結構保持一致 ===
+            nutrition: {},
+            // === 修改結束 ===
             priceHistory, currentPrice, priceChange: `${priceChange >= 0 ? '+' : ''}${priceChange}%`, season: seasons[Math.floor(Math.random() * seasons.length)],
         };
     });
@@ -461,7 +463,7 @@ async function showVegetableDetail(id, pushState = true) {
             return;
         }
 
-        // 動態生成 HTML
+        // 動態生成 HTML (這部分維持不變)
         detailSection.innerHTML = `
             <div class="detail-container">
                 <div class="back-button-container">
@@ -478,7 +480,7 @@ async function showVegetableDetail(id, pushState = true) {
                                 ${vegetable.priceChange || 'N/A'}
                             </span>
                         </div>
-                        <div class="current-price">目前價格：NT$ ${vegetable.currentPrice || 'N/A'} / 斤</div>
+                        <div class="current-price">目前價格：NT$ ${vegetable.currentPrice || 'N/A'} / 公斤</div>
                     </div>
                 </header>
                 
@@ -528,21 +530,54 @@ async function showVegetableDetail(id, pushState = true) {
             </div>
         `;
 
-        // 渲染圖表
+        // === 修改開始：只篩選指定的營養素給雷達圖 ===
         setTimeout(() => {
             updatePriceChart(null, `detail-priceChart`, vegetable.id, 30);
             const nutritionCanvas = document.getElementById(`detail-nutritionChart`);
+
+            // 檢查畫布和營養數據是否存在
             if (nutritionCanvas && vegetable.nutrition) {
-                const nut = vegetable.nutrition;
-                const labels = Object.keys(nut);
-                const data = Object.values(nut).map((value, index) => {
-                    // 這裡的邏輯需要與後端資料結構對齊，先用一個簡化版
-                    const maxValues = { '熱量': 500, '蛋白質': 50, '纖維': 10, '維生素C': 150 };
-                    return (value / (maxValues[labels[index]] || 100)) * 100;
+                const fullNutrition = vegetable.nutrition; // 完整的營養數據
+
+                // 1. 定義雷達圖要顯示的營養素
+                const radarChartKeys = ['水', '蛋白質', '脂肪', '碳水化合物', '膳食纖維', '糖'];
+
+                const chartLabels = [];
+                const chartDataValues = [];
+
+                // 2. 從完整數據中，篩選出雷達圖需要的資料
+                radarChartKeys.forEach(key => {
+                    // 檢查蔬菜是否包含這項營養素
+                    if (fullNutrition.hasOwnProperty(key)) {
+                        chartLabels.push(key);
+                        chartDataValues.push(fullNutrition[key]);
+                    }
                 });
-                renderRadarChart(nutritionCanvas, labels, data, '營養價值(%)');
+
+                // 3. 為了讓雷達圖比例好看，設定一個參考最大值
+                // (這些值可以根據常見蔬菜的營養分佈進行微調)
+                const maxValues = {
+                    '水': 100,          // 100g中最多100g是水
+                    '蛋白質': 7,         // 一般蔬菜蛋白質含量不高
+                    '脂肪': 0.5,            // 一般蔬菜脂肪含量很低
+                    '碳水化合物': 30,
+                    '膳食纖維': 10,
+                    '糖': 7
+                };
+
+                // 4. 將原始數值轉換為百分比 (0-100)，以便在同一個圖表上比較
+                const normalizedData = chartDataValues.map((value, index) => {
+                    const key = chartLabels[index];
+                    const max = maxValues[key] || 100; // 如果沒有設定最大值，預設為100
+                    // 確保百分比在 0 到 100 之間
+                    return Math.min(100, Math.max(0, (value / max) * 100));
+                });
+
+                // 5. 使用篩選和標準化後的資料來渲染雷達圖
+                renderRadarChart(nutritionCanvas, chartLabels, normalizedData, '主要營養素佔比(%)');
             }
         }, 100);
+        // === 修改結束 ===
 
         if (window.innerWidth <= 768) sidebar.classList.remove('active');
         window.scrollTo(0, 0);

@@ -493,7 +493,7 @@ def get_vegetables_by_name_or_alias(search_term: str, **kwargs):
                 water_g,
                 protein_g,
                 fat_g,
-                carbs_g,
+                carb_g,
                 fiber_g,
                 sugar_g,
                 sodium_mg,
@@ -508,7 +508,7 @@ def get_vegetables_by_name_or_alias(search_term: str, **kwargs):
                 vitamin_e_mg,
                 vitamin_b1_mg,
                 folic_acid_ug,
-                vege_id,
+                vege_id
             FROM vege_nutrition
             WHERE vege_id = ANY(%s);
         """
