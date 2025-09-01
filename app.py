@@ -20,6 +20,7 @@ from nutri_rec.nutri_rec import (
     get_vegetables_by_name_or_alias,
 )
 from redis_client import get_redis_connection
+from decimal import Decimal
 import io
 import boto3
 from botocore.exceptions import NoCredentialsError, ClientError
@@ -135,6 +136,8 @@ def get_db_connection():
 
 
 
+# app.py
+
 def listen_for_notifications():
     """
     建立一個獨立的執行緒，持續監聽 PostgreSQL 的 NOTIFY 事件。
@@ -152,9 +155,10 @@ def listen_for_notifications():
         conn.autocommit = True
         cur = conn.cursor()
 
-        # 開始監聽指定的 Channel
-        cur.execute("LISTEN notify_price_predictions_update;")
-        app.logger.info("Listening for notifications on 'notify_price_predictions_update'...")
+        # 【修改】將監聽的 Channel 改為與您的資料庫觸發器對應的名稱
+        channel_name = "notify_price_status_update"
+        cur.execute(f"LISTEN {channel_name};")
+        app.logger.info(f"Listening for notifications on '{channel_name}'...")
 
         while True:
             # 檢查是否有新的通知
@@ -167,7 +171,8 @@ def listen_for_notifications():
                 try:
                     # 解析 payload，它通常是一個 JSON 字串
                     notification_data = json.loads(notify.payload)
-                    handle_push_notification(notification_data)
+                    # 【修改】呼叫我們新的推播處理邏輯
+                    handle_price_alert_notification(notification_data)
                 except json.JSONDecodeError as e:
                     app.logger.error(f"Error decoding JSON payload: {e}")
                 except Exception as e:
@@ -722,10 +727,7 @@ def get_recipe_detail(recipe_id):
             return jsonify({'error': '找不到該食譜'}), 404
 
         steps_text = '\n'.join([f"步驟{r[2]}. {r[3]}" for r in rows])
-        minio_bucket = os.getenv("MINIO_BUCKET_NAME", "veg-data-bucket")
-        flex_image_url = os.getenv("url_9000")
-        # 根據食譜 ID 產生 MinIO 圖片 URL
-        image_url = f"{flex_image_url}/{minio_bucket}/images/{recipe_id}.jpg"
+        image_url = f"/api/image/{recipe_id}.jpg"
         recipe = {
             'id': rows[0][0],
             'title': rows[0][1],
@@ -1663,14 +1665,31 @@ def handle_text_message(event):
                                 except requests.exceptions.RequestException as e:
                                     app.logger.error(f"呼叫 /api/price 失敗: {e}")
                                     # 讓 found_local_data 保持 False 以觸發後續的網頁搜尋
+
+                        else:
+                            app.logger.info("Handling empty price intent, suggesting seasonal vegetables.")
+                            seasonal_veges = get_seasonal_vegetables()
                             
-                            if not found_local_data:
+                            if seasonal_veges:
+                                messages_to_reply.append(TextMessage(text="您是想問現在有什麼便宜的蔬菜嗎？菜菜子幫您找到一些當季的好選擇！"))
+                                flex_message = create_seasonal_flex_message(seasonal_veges)
+                                if flex_message:
+                                    messages_to_reply.append(flex_message)
+                                found_local_data = True # 標記已處理，避免後續的網路搜尋
+                            else:
+                                # 如果連當季蔬菜都找不到，提供一個通用的回覆
+                                messages_to_reply.append(TextMessage(text="抱歉，我不太確定您想查詢哪種蔬菜的價格，而且目前也找不到特別推薦的當季蔬菜資訊。"))
+                                found_local_data = True # 同樣標記已處理 
+
+                        if not found_local_data:
+                            # 確保 keywords 有內容才進行搜尋
+                            if keywords:
                                 combined_query = " ".join(keywords) + " 價格"
                                 messages_to_reply.append(TextMessage(text=f"抱歉，本地資料庫找不到「{keywords[0]}」的價格資訊。我正在為您進行線上搜尋..."))
                                 
-                                # 【修改】使用新的輔助函式進行網頁搜尋
                                 search_result_text = perform_llm_web_search(combined_query)
                                 messages_to_reply.append(TextMessage(text=search_result_text))
+                            # 如果 keywords 是空的且前面邏輯沒處理到，這裡就不做事，避免不必要的搜尋       
 
                     elif intent == "nutrition":
                         found_local_data = False
@@ -2170,41 +2189,106 @@ def _create_grouped_nutrient_flex_message(veg_data_list, alt_text_prefix):
 # 新增: 處理推播邏輯的函式
 from linebot.v3.messaging import PushMessageRequest, TextMessage
 
-def handle_push_notification(data):
-    """
-    根據從資料庫收到的通知資料，發送 LINE 推播訊息。
-    """
-    # 這裡的邏輯需要根據您的資料庫 payload 來設計
-    # 假設您的 payload 包含 'user_id' 和 'message'
-    user_id = data.get('user_id')
-    push_message_text = data.get('message')
+# app.py
 
-    if not user_id or not push_message_text:
-        app.logger.error("Missing user_id or message in notification data.")
+# 【新函式】取代舊的 handle_push_notification
+def handle_price_alert_notification(data):
+    """
+    根據從資料庫 price_status 表收到的通知，檢查價格變動並決定是否推播。
+    """
+    app.logger.info(f"Handling price alert notification for data: {data}")
+
+    # 1. 從 payload 中解析出 vege_id
+    vege_id = data.get('vege_id')
+    if not vege_id:
+        app.logger.warning("Notification payload is missing 'vege_id'.")
         return
 
-    # 您也可以在這裡根據資料庫資料查詢更複雜的訊息內容
-    # 例如: 從資料庫查詢特定蔬菜的價格變動
-    
-    # 建立 LINE Bot 推播訊息
-    push_message_request = PushMessageRequest(
-        to=user_id,
-        messages=[TextMessage(text=push_message_text)]
-    )
-    
-    # 建立 Line Messaging API 客戶端
-    # 您檔案中已有這部分程式碼
-    # configuration = Configuration(access_token=os.getenv("LINE_CHANNEL_ACCESS_TOKEN"))
-    # api_client = ApiClient(configuration)
-    # messaging_api = MessagingApi(api_client)
-
+    conn = None
     try:
-        # 發送推播訊息
-        messaging_api.push_message(push_message_request)
-        app.logger.info(f"Successfully sent push message to user {user_id}")
-    except Exception as e:
-        app.logger.error(f"Failed to send push message to user {user_id}: {e}")
+        conn = get_db_connection()
+        if not conn:
+            app.logger.error("Failed to get DB connection for handling push.")
+            return
+        
+        cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+
+        # 2. 查詢最新的價格狀態和蔬菜名稱
+        query = """
+            SELECT 
+                ps.price_change, 
+                ps.latest_price, 
+                bv.vege_name
+            FROM price_status ps
+            JOIN basic_vege bv ON ps.vege_id = bv.id
+            WHERE ps.vege_id = %s
+            ORDER BY ps.updated_at DESC
+            LIMIT 1;
+        """
+        cur.execute(query, (vege_id,))
+        price_data = cur.fetchone()
+
+        if not price_data:
+            app.logger.warning(f"Could not find price data for vege_id {vege_id}.")
+            return
+
+        price_change_raw = price_data.get('price_change') # 先用 raw 變數接收
+        latest_price = price_data.get('latest_price')
+        veg_name = price_data.get('vege_name')
+
+        # 3. 【修正】先檢查型別並轉換為 float，再進行數值比較
+        if price_change_raw is None or not isinstance(price_change_raw, (int, float, Decimal)):
+            app.logger.info(f"Price change for {veg_name} is None or not a valid number. No action taken.")
+            return
+
+        # 將 Decimal 或 int 轉換為 float 以進行比較
+        price_change = float(price_change_raw)
+        
+        # 現在的比較邏輯就很單純了
+        if price_change <= 25:
+            # 【修正】Log 訊息中的變數也更新一下
+            app.logger.info(f"Price change for {veg_name} ({price_change}%) does not meet alert threshold (> 25%). No action taken.")
+            return
+        
+        app.logger.info(f"Price change for {veg_name} is {price_change}%, exceeding 25%. Preparing to send alerts.")
+
+        # 4. 查詢所有要接收通知的使用者
+        # 注意：這裡的範例是推播給 'users' 表中的所有使用者。
+        # 在正式產品中，您可能需要一個使用者訂閱系統，只推播給訂閱此蔬菜的使用者。
+        cur.execute("SELECT line_user_id FROM users WHERE line_user_id IS NOT NULL;")
+        users_to_notify = [row['line_user_id'] for row in cur.fetchall()]
+
+        if not users_to_notify:
+            app.logger.info("No users found in the database to notify.")
+            return
+
+        # 5. 建立並發送推播訊息
+        message_text = (
+            f"【蔬菜價格警報🔔】\n"
+            f"您關注的「{veg_name}」價格大幅上漲！\n\n"
+            f"📈 漲幅：{price_change:.1f}%\n"
+            f"💰 最新價格：每公斤 {latest_price:.1f} 元\n\n"
+            f"建議最近選購其他當季蔬菜喔！"
+        )
+        
+        push_message = TextMessage(text=message_text)
+
+        for user_id in users_to_notify:
+            try:
+                push_request = PushMessageRequest(to=user_id, messages=[push_message])
+                messaging_api.push_message(push_request)
+                app.logger.info(f"Successfully sent price alert to user {user_id} for {veg_name}.")
+            except Exception as e:
+                # 即使單一使用者失敗，也繼續嘗試下一個
+                app.logger.error(f"Failed to send push message to user {user_id}: {e}")
+
+    except (Exception, psycopg2.DatabaseError) as error:
+        app.logger.error(f"An error occurred in handle_price_alert_notification: {error}")
         app.logger.error(traceback.format_exc())
+    finally:
+        if conn:
+            conn.close()
+
 
 
 if __name__ == "__main__":
