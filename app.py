@@ -135,8 +135,6 @@ def get_db_connection():
 
 
 
-# ... (其他 import 和函式)
-
 def listen_for_notifications():
     """
     建立一個獨立的執行緒，持續監聽 PostgreSQL 的 NOTIFY 事件。
@@ -155,9 +153,8 @@ def listen_for_notifications():
         cur = conn.cursor()
 
         # 開始監聽指定的 Channel
-        # 請將 'channel_name' 改為您在 PostgreSQL Trigger 中使用的名稱
-        cur.execute("LISTEN price_predictions_update;")
-        app.logger.info("Listening for notifications on 'price_predictions_update'...")
+        cur.execute("LISTEN notify_price_predictions_update;")
+        app.logger.info("Listening for notifications on 'notify_price_predictions_update'...")
 
         while True:
             # 檢查是否有新的通知
@@ -361,17 +358,19 @@ def get_vegetables():
         cur.execute(sql)
         rows = cur.fetchall()
         
-        # 取得 MinIO 的公開 URL，一次性處理
-        minio_endpoint = os.getenv("url_9000")
-        bucket_name = os.getenv("MINIO_BUCKET_NAME")
         
         veg_list = []
         for row in rows:
             price_change_val = row['price_change']
             price_change_str = f"{'+' if price_change_val >= 0 else ''}{price_change_val:.1f}%" if price_change_val is not None else "N/A"
             
-            # 【優化】直接組合 MinIO 的公開 URL，不再經過 Flask
-            image_url = f"{minio_endpoint}/{bucket_name}/images/{row['vege_name']}.jpg"
+            veg_list = []
+        for row in rows:
+            price_change_val = row['price_change']
+            price_change_str = f"{'+' if price_change_val >= 0 else ''}{price_change_val:.1f}%" if price_change_val is not None else "N/A"
+            
+            # 【修正】改用與詳細頁面相同的相對路徑邏輯
+            image_url = f"/api/image/{row['vege_name']}.jpg"
 
             veg_list.append({
                 'id': row['id'],
@@ -381,7 +380,7 @@ def get_vegetables():
                 'priceChange': price_change_str,
                 'currentPrice': float(row['latest_price']) if row['latest_price'] is not None else None,
                 'latestObsTime': row['latest_obstime'].isoformat() if row['latest_obstime'] else None,
-                'image': image_url, # 【優化】使用直連 URL
+                'image': image_url, # 【修正】使用相對路徑
                 'priceHistory': [float(p) for p in row['price_history']],
                 'nutrition': {}
             })
