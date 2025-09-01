@@ -60,6 +60,7 @@ import redis
 import threading
 import json
 import time
+from threading import Lock
 
 
 # 新增日誌以確認 rec_veg 模組載入
@@ -2189,72 +2190,287 @@ def _create_grouped_nutrient_flex_message(veg_data_list, alt_text_prefix):
 # 新增: 處理推播邏輯的函式
 from linebot.v3.messaging import PushMessageRequest, TextMessage
 
-# app.py
+pending_vegetables = []
+batch_lock = Lock()
 
-# 【新函式】取代舊的 handle_push_notification
-def handle_price_alert_notification(data):
+def build_summary_flex_message(vegetable_list):
+    """
+    根據一個蔬菜資料列表，建立一個包含多筆資訊的 Flex Message。
+    """
+    if not vegetable_list:
+        return None
+
+    # 從環境變數取得網站 URL
+    web_url = os.getenv("url_5000", "http://localhost:5000")
+
+    # 動態產生每一筆蔬菜的顯示元件
+    item_contents = []
+    for veg_data in vegetable_list:
+        try:
+            # 從原始 payload 中解析資料
+            veg_name = veg_data.get('vege_name')
+            price_change = float(veg_data.get('price_change'))
+
+            item_box = FlexBox(
+                layout="horizontal",
+                margin="md",
+                contents=[
+                    FlexText(
+                        text=f"+{price_change:.0f}%",
+                        weight="bold",
+                        color="#EC407A",
+                        flex=1,
+                        gravity="center",
+                    ),
+                    FlexText(
+                        text=veg_name,
+                        flex=3,
+                        gravity="center",
+                    ),
+                ],
+            )
+            item_contents.append(item_box)
+        except (ValueError, TypeError, AttributeError) as e:
+            app.logger.warning(f"Skipping invalid vegetable data in batch: {veg_data}, error: {e}")
+            continue # 如果單筆資料有問題，就跳過
+
+    # 如果沒有任何有效的項目可以顯示，則返回 None
+    if not item_contents:
+        return None
+
+    # 組合標題、分隔線和所有蔬菜項目
+    body_contents = [
+        FlexText(text="菜價上漲通知", weight="bold", size="lg", align="center"),
+        FlexSeparator(margin="md"),
+    ]
+    body_contents.extend(item_contents)
+
+    # 建立 Flex Message
+    flex_message_contents = FlexBubble(
+        body=FlexBox(
+            layout="vertical",
+            spacing="md",
+            contents=body_contents,
+        ),
+        footer=FlexBox(
+            layout="vertical",
+            contents=[
+                FlexButton(
+                    style="primary",
+                    color="#6AB36A",
+                    height="sm",
+                    action=URIAction(label="查看更多", uri=f"{web_url}/?section=overview"),
+                )
+            ],
+        ),
+    )
+
+    # 取得第一筆蔬菜名稱用於 alt_text
+    alt_text_veg_name = vegetable_list[0].get('vege_name', '多種蔬菜')
+    return FlexMessage(
+        alt_text=f"{alt_text_veg_name} 等多種蔬菜價格大幅上漲！",
+        contents=flex_message_contents
+    )
+
+def process_and_send_batch():
+    """
+    (背景執行緒) 定期檢查是否有待處理的蔬菜通知，
+    若有，則將它們打包成一則訊息並發送。
+    """
+    global pending_vegetables
+    global batch_lock
+    
+    app.logger.info("Starting background sender thread...")
+    
+    while True:
+        # 每 60 秒檢查一次
+        time.sleep(60)
+        
+        batch_to_send = []
+        
+        # 使用鎖來安全地操作共享的 list
+        with batch_lock:
+            if pending_vegetables:
+                # 複製待辦清單，然後清空原始清單
+                # 這樣可以縮短鎖定的時間
+                batch_to_send = list(pending_vegetables)
+                pending_vegetables.clear()
+        
+        # 如果有待辦事項才繼續
+        if not batch_to_send:
+            continue
+            
+        app.logger.info(f"Processing a batch of {len(batch_to_send)} vegetable price alerts.")
+        
+        # 1. 建立彙總的 Flex Message
+        summary_message = build_summary_flex_message(batch_to_send)
+        if not summary_message:
+            app.logger.warning("Failed to build summary message, batch might be empty or invalid.")
+            continue
+            
+        # 2. 取得所有需要通知的使用者
+        conn = None
+        try:
+            conn = get_db_connection()
+            if not conn:
+                app.logger.error("Failed to get DB connection for sending batch.")
+                continue
+
+            cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
+            cur.execute("SELECT line_user_id FROM users WHERE line_user_id IS NOT NULL;")
+            users_to_notify = [row['line_user_id'] for row in cur.fetchall()]
+
+            if not users_to_notify:
+                app.logger.info("No users found in DB to send batch notification.")
+                continue
+
+            # 3. 發送推播給所有使用者
+            app.logger.info(f"Sending summary to {len(users_to_notify)} users.")
+            # Line API 有廣播(multicast)的數量限制，但對於一般用戶量，逐一發送更簡單可靠
+            for user_id in users_to_notify:
+                try:
+                    push_request = PushMessageRequest(to=user_id, messages=[summary_message])
+                    messaging_api.push_message(push_request)
+                except Exception as e:
+                    app.logger.error(f"Failed to send batch push message to user {user_id}: {e}")
+                    
+        except Exception as e:
+            app.logger.error(f"An error occurred in process_and_send_batch: {e}")
+        finally:
+            if conn:
+                conn.close()
+
+
+def listen_for_notifications():
+    """
+    (背景執行緒) 持續監聽 PostgreSQL 的 NOTIFY 事件。
+    【修正】收到 vege_id 後，主動查詢資料庫以取得完整資訊。
+    """
+    global pending_vegetables
+    global batch_lock
+    
+    app.logger.info("Starting database listener thread...")
+    
+    listen_conn = None
+    query_conn = None # 為查詢建立一個獨立的連線
+    try:
+        listen_conn = get_db_connection()
+        if not listen_conn: return
+
+        listen_conn.autocommit = True
+        cur = listen_conn.cursor()
+        
+        channel_name = "notify_price_status_update"
+        cur.execute(f"LISTEN {channel_name};")
+        app.logger.info(f"Listening for notifications on '{channel_name}'...")
+
+        while True:
+            listen_conn.poll()
+            while listen_conn.notifies:
+                notify = listen_conn.notifies.pop(0)
+                app.logger.info(f"Received notification payload: {notify.payload}")
+                
+                try:
+                    notification_data = json.loads(notify.payload)
+                    vege_id = notification_data.get('vege_id')
+
+                    if not vege_id:
+                        app.logger.warning("Payload is missing 'vege_id'. Skipping.")
+                        continue
+
+                    # --- 新增：用 vege_id 查詢資料庫取得完整資訊 ---
+                    query_conn = get_db_connection()
+                    with query_conn.cursor(cursor_factory=psycopg2.extras.DictCursor) as query_cur:
+                        sql = """
+                            SELECT 
+                                ps.price_change, 
+                                ps.latest_price, 
+                                bv.vege_name
+                            FROM price_status ps
+                            JOIN basic_vege bv ON ps.vege_id = bv.id
+                            WHERE ps.vege_id = %s
+                            ORDER BY ps.updated_at DESC
+                            LIMIT 1;
+                        """
+                        query_cur.execute(sql, (vege_id,))
+                        veg_info = query_cur.fetchone()
+                    
+                    if not veg_info:
+                        app.logger.warning(f"Could not find details for vege_id {vege_id} in the database.")
+                        continue
+                    # ----------------------------------------------------
+
+                    # 現在用從資料庫查到的完整資訊來判斷
+                    price_change = float(veg_info.get('price_change', 0))
+                    veg_name = veg_info.get('vege_name')
+
+                    if price_change > 25:
+                        # 建立一個包含完整資訊的 dict 加入待辦清單
+                        data_to_add = {
+                            "vege_id": vege_id,
+                            "vege_name": veg_name,
+                            "price_change": price_change,
+                            "latest_price": veg_info.get('latest_price')
+                        }
+                        with batch_lock:
+                            pending_vegetables.append(data_to_add)
+                        app.logger.info(f"Added '{veg_name}' to the pending batch (Price change: {price_change}%).")
+                    else:
+                        app.logger.info(f"Skipping '{veg_name}', price change {price_change}% does not meet threshold.")
+                        
+                except (json.JSONDecodeError, ValueError, TypeError) as e:
+                    app.logger.error(f"Error processing notification for payload '{notify.payload}': {e}")
+                finally:
+                    if query_conn:
+                        query_conn.close() # 確保查詢連線被關閉
+            
+            time.sleep(1)
+
+    except Exception as e:
+        app.logger.error(f"Listener thread error: {e}, restarting in 5s...")
+        time.sleep(5)
+        listen_for_notifications()
+    finally:
+        if listen_conn:
+            listen_conn.close()
+
+
+# def handle_price_alert_notification(data):
     """
     根據從資料庫 price_status 表收到的通知，檢查價格變動並決定是否推播。
+    【修改】此版本將會發送 FlexMessage 而不是純文字訊息。
     """
     app.logger.info(f"Handling price alert notification for data: {data}")
 
-    # 1. 從 payload 中解析出 vege_id
+    # 1. 從 payload 中解析出 vege_id 和其他資訊
     vege_id = data.get('vege_id')
-    if not vege_id:
-        app.logger.warning("Notification payload is missing 'vege_id'.")
+    veg_name = data.get('vege_name')
+    price_change_raw = data.get('price_change')
+    latest_price = data.get('latest_price')
+
+    if not all([vege_id, veg_name, price_change_raw, latest_price]):
+        app.logger.warning(f"Notification payload is missing required data: {data}")
         return
 
+    # 2. 檢查價格變動是否超過門檻 (例如 > 25%)
+    try:
+        price_change = float(price_change_raw)
+        if price_change <= 25:
+            app.logger.info(f"Price change for {veg_name} ({price_change}%) does not meet alert threshold (> 25%). No action taken.")
+            return
+    except (ValueError, TypeError):
+        app.logger.error(f"Invalid price_change value for {veg_name}: {price_change_raw}")
+        return
+
+    app.logger.info(f"Price change for {veg_name} is {price_change}%, exceeding 25%. Preparing to send alerts.")
+
+    # 3. 查詢所有要接收通知的使用者
     conn = None
     try:
         conn = get_db_connection()
-        if not conn:
-            app.logger.error("Failed to get DB connection for handling push.")
-            return
-        
+        if not conn: return
+
         cur = conn.cursor(cursor_factory=psycopg2.extras.DictCursor)
-
-        # 2. 查詢最新的價格狀態和蔬菜名稱
-        query = """
-            SELECT 
-                ps.price_change, 
-                ps.latest_price, 
-                bv.vege_name
-            FROM price_status ps
-            JOIN basic_vege bv ON ps.vege_id = bv.id
-            WHERE ps.vege_id = %s
-            ORDER BY ps.updated_at DESC
-            LIMIT 1;
-        """
-        cur.execute(query, (vege_id,))
-        price_data = cur.fetchone()
-
-        if not price_data:
-            app.logger.warning(f"Could not find price data for vege_id {vege_id}.")
-            return
-
-        price_change_raw = price_data.get('price_change') # 先用 raw 變數接收
-        latest_price = price_data.get('latest_price')
-        veg_name = price_data.get('vege_name')
-
-        # 3. 【修正】先檢查型別並轉換為 float，再進行數值比較
-        if price_change_raw is None or not isinstance(price_change_raw, (int, float, Decimal)):
-            app.logger.info(f"Price change for {veg_name} is None or not a valid number. No action taken.")
-            return
-
-        # 將 Decimal 或 int 轉換為 float 以進行比較
-        price_change = float(price_change_raw)
-        
-        # 現在的比較邏輯就很單純了
-        if price_change <= 25:
-            # 【修正】Log 訊息中的變數也更新一下
-            app.logger.info(f"Price change for {veg_name} ({price_change}%) does not meet alert threshold (> 25%). No action taken.")
-            return
-        
-        app.logger.info(f"Price change for {veg_name} is {price_change}%, exceeding 25%. Preparing to send alerts.")
-
-        # 4. 查詢所有要接收通知的使用者
-        # 注意：這裡的範例是推播給 'users' 表中的所有使用者。
-        # 在正式產品中，您可能需要一個使用者訂閱系統，只推播給訂閱此蔬菜的使用者。
         cur.execute("SELECT line_user_id FROM users WHERE line_user_id IS NOT NULL;")
         users_to_notify = [row['line_user_id'] for row in cur.fetchall()]
 
@@ -2262,24 +2478,65 @@ def handle_price_alert_notification(data):
             app.logger.info("No users found in the database to notify.")
             return
 
-        # 5. 建立並發送推播訊息
-        message_text = (
-            f"【蔬菜價格警報🔔】\n"
-            f"您關注的「{veg_name}」價格大幅上漲！\n\n"
-            f"📈 漲幅：{price_change:.1f}%\n"
-            f"💰 最新價格：每公斤 {latest_price:.1f} 元\n\n"
-            f"建議最近選購其他當季蔬菜喔！"
-        )
-        
-        push_message = TextMessage(text=message_text)
+        # 4. 建立 Flex Message
+        # 從環境變數取得網站 URL
+        web_url = os.getenv("url_5000", "http://localhost:5000")
 
+        # 建立 Flex Message 內容
+        flex_message_contents = FlexBubble(
+            body=FlexBox(
+                layout="vertical",
+                spacing="md",
+                contents=[
+                    FlexText(text="菜價上漲通知", weight="bold", size="lg", align="center"),
+                    FlexSeparator(margin="md"),
+                    # 每一種蔬菜都是一個 horizontal Box
+                    FlexBox(
+                        layout="horizontal",
+                        margin="md",
+                        contents=[
+                            FlexText(
+                                text=f"+{price_change:.0f}%", # 格式化為整數百分比
+                                weight="bold",
+                                color="#EC407A", # 使用紅色系突顯
+                                flex=1,
+                                gravity="center",
+                            ),
+                            FlexText(
+                                text=veg_name,
+                                flex=3,
+                                gravity="center",
+                            ),
+                        ],
+                    ),
+                    # 若要顯示多個蔬菜，可在此處繼續加入 FlexBox
+                ],
+            ),
+            footer=FlexBox(
+                layout="vertical",
+                contents=[
+                    FlexButton(
+                        style="primary",
+                        color="#6AB36A", # 按鈕顏色
+                        height="sm",
+                        action=URIAction(label="查看更多", uri=f"{web_url}/?section=overview"),
+                    )
+                ],
+            ),
+        )
+
+        push_message = FlexMessage(
+            alt_text=f"{veg_name} 價格大幅上漲！", # 在手機通知欄顯示的預覽文字
+            contents=flex_message_contents
+        )
+
+        # 5. 發送推播訊息給所有使用者
         for user_id in users_to_notify:
             try:
                 push_request = PushMessageRequest(to=user_id, messages=[push_message])
                 messaging_api.push_message(push_request)
                 app.logger.info(f"Successfully sent price alert to user {user_id} for {veg_name}.")
             except Exception as e:
-                # 即使單一使用者失敗，也繼續嘗試下一個
                 app.logger.error(f"Failed to send push message to user {user_id}: {e}")
 
     except (Exception, psycopg2.DatabaseError) as error:
@@ -2290,12 +2547,16 @@ def handle_price_alert_notification(data):
             conn.close()
 
 
-
 if __name__ == "__main__":
-    # 【修正】修正執行緒的 target
+    # 啟動資料庫監聽執行緒 (生產者)
     listener_thread = threading.Thread(target=listen_for_notifications)
     listener_thread.daemon = True
     listener_thread.start()
+
+    # === 新增：啟動背景批次發送執行緒 (消費者) ===
+    sender_thread = threading.Thread(target=process_and_send_batch)
+    sender_thread.daemon = True
+    sender_thread.start()
 
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port, threaded=True)
