@@ -1791,7 +1791,7 @@ def handle_text_message(event):
                             # --- 開始建立 Flex Message ---
                             bubble_contents = [
                                 FlexText(
-                                    text="雖然不是我的主修，但為您線上搜尋到以下資訊",
+                                    text="為您線上搜尋到以下資訊",
                                     weight="bold",
                                     size="md",
                                     margin="md",
