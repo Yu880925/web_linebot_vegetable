@@ -103,6 +103,3 @@ vegbot/
 └── redis_client.py       # Redis 連線
 ```
 
-## 📄 授權
-
-MIT License
