@@ -3,8 +3,6 @@
 
 # 快速啟動
 1. Clone 專案
-bashgit clone https://github.com/yourusername/vegbot.git
-cd vegbot
 2. 環境變數設定
 建立 .env 檔案：
 env# LINE Bot
@@ -12,21 +10,21 @@ LINE_CHANNEL_ACCESS_TOKEN=your_token
 LINE_CHANNEL_SECRET=your_secret
 
 # Database
-DATABASE_URL=postgresql://user:pass@host:5432/db
+DATABASE_URL
 
 # Redis
-REDIS_HOST=redis
-REDIS_PORT=6379
+REDIS_HOST
+REDIS_PORT
 
 # MinIO
-MINIO_ROOT_USER=minioadmin
-MINIO_ROOT_PASSWORD=minioadmin
-MINIO_BUCKET_NAME=veg-data-bucket
+MINIO_ROOT_USER
+MINIO_ROOT_PASSWORD
+MINIO_BUCKET_NAME
 
 # URLs
-url_5000=http://localhost:5000
-url_9000=http://localhost:9000
-FAST_API_URL=http://your-llm-service:8000
+url_5000
+url_9000
+FAST_API_URL
 3. 啟動服務
 bashdocker-compose up -d
 4. 檢查狀態
@@ -48,7 +46,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # 啟動外部服務
-docker-compose up -d redis minio
+docker compose up -d redis minio
 
 # 執行應用程式
 python app.py
