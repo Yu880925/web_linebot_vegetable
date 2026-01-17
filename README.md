@@ -63,7 +63,7 @@ docker-compose logs -f linebot_app
 - MinIO API: `http://localhost:9000`
 - MinIO Console: `http://localhost:9001`
 
-##  本地開發 (不使用 Docker)
+##  本地開發 
 ```bash
 # 虛擬環境
 python -m venv venv
@@ -73,7 +73,7 @@ source venv/bin/activate
 pip install -r requirements.txt
 
 # 啟動外部服務
-docker-compose up -d redis minio
+docker compose up -d 
 
 # 執行應用程式
 python app.py
