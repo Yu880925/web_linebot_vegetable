@@ -1,7 +1,7 @@
-蔬菜小幫手 LINE Bot
+# 蔬菜小幫手 LINE Bot
 智能蔬菜辨識、價格監控、營養查詢與食譜推薦的 LINE Bot
 
-快速啟動
+# 快速啟動
 1. Clone 專案
 bashgit clone https://github.com/yourusername/vegbot.git
 cd vegbot
@@ -39,7 +39,7 @@ Redis: 6379
 MinIO API: http://localhost:9000
 MinIO Console: http://localhost:9001
 
-本地開發
+# 本地開發
 bash# 建立虛擬環境
 python -m venv venv
 source venv/bin/activate
